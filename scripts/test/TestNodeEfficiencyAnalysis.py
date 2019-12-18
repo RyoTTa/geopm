@@ -31,8 +31,12 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+from __future__ import absolute_import
+from __future__ import division
+
 import unittest
-from analysis_helper import *
+from test.analysis_helper import *
+from test import mock_report
 
 
 @unittest.skipIf(g_skip_analysis_test, g_skip_analysis_ex)
@@ -57,15 +61,16 @@ class TestNodeEfficiencyAnalysis(unittest.TestCase):
                         }
         self._tmp_files = []
         self._num_nodes = 8
+        self._node_names = ['node{}'.format(node) for node in range(self._num_nodes)]
         # default mocked data for each column given node id
         self._gen_val = {
-            'count': (lambda node, pow: 1),
-            'energy_pkg': (lambda node, pow: 14000.0),
-            'energy_dram': (lambda node, pow: 2000.0),
-            'frequency': (lambda node, pow: 50.0 + (float(pow)/self._max_power)*(float(node)/self._num_nodes)),
-            'mpi_runtime': (lambda node, pow: 10),
-            'runtime': (lambda node, pow: 50.0),
-            'id': (lambda node, pow: 'bad'),
+            'count': (lambda node, region, pow: 1),
+            'energy_pkg': (lambda node, region, pow: 14000.0),
+            'energy_dram': (lambda node, region, pow: 2000.0),
+            'frequency': (lambda node, region, pow: 50.0 + (pow/self._max_power)*(self._node_names.index(node)/self._num_nodes)),
+            'mpi_runtime': (lambda node, region, pow: 10),
+            'runtime': (lambda node, region, pow: 50.0),
+            'id': (lambda node, region, pow: 'bad'),
         }
 
     def tearDown(self):
@@ -75,51 +80,22 @@ class TestNodeEfficiencyAnalysis(unittest.TestCase):
             except OSError:
                 pass
 
-    def make_mock_report_df(self):
-        # for input data frame
-        version = '0.3.0'
-        region_id = {
-            'epoch':  '9223372036854775808',
-            'dgemm':  '11396693813',
-            'stream': '20779751936'
-        }
-        start_time = 'Tue Nov  6 08:00:00 2018'
-        index_names = ['version', 'start_time', 'name', 'agent', 'node_name', 'iteration', 'region']
-        numeric_cols = ['count', 'energy_pkg', 'energy_dram', 'frequency', 'mpi_runtime', 'runtime', 'id']
-        iterations = range(1, 4)
-        input_data = {}
-        for col in numeric_cols:
-            input_data[col] = {}
-            for agent in ['power_balancer', 'power_governor']:
-                for power_cap in self._powers:
-                    prof_name = '{}_{}'.format(self._name_prefix, power_cap)
-                    for node in range(self._num_nodes):
-                        node_name = 'node{}'.format(node)
-                        for it in iterations:
-                            for region in region_id.keys():
-                                self._gen_val['id'] = lambda node, power_cap: region_id[region]
-                                index = (version, start_time, prof_name, agent, node_name, it, region)
-                                value = self._gen_val[col](node, power_cap)
-                                input_data[col][index] = value
-
-        df = pandas.DataFrame.from_dict(input_data)
-        df.index.rename(index_names, inplace=True)
-        return df
-
     def make_expected_summary_df(self, power_cap, agent):
         cols = ['frequency']
         expected_data = []
-        for node in range(self._num_nodes):
-            val = self._gen_val['frequency'](node, power_cap)
+        for node_name in self._node_names:
+            val = self._gen_val['frequency'](node_name, None, power_cap)
             val *= 0.01 * self._sticker_freq / 1e9
             expected_data.append(val)
-        nodes = ['node{}'.format(n) for n in range(self._num_nodes)]
-        index = pandas.Index(nodes, name='node_name')
+        index = pandas.Index(self._node_names, name='node_name')
         return pandas.DataFrame(expected_data, index=index, columns=cols)
 
     def test_node_efficiency_process(self):
         analysis = geopmpy.analysis.NodeEfficiencyAnalysis(**self._config)
-        report_df = self.make_mock_report_df()
+        report_df = mock_report.make_mock_report_df(
+                self._name_prefix, self._node_names,
+                {'power_balancer': (self._gen_val, self._powers),
+                 'power_governor': (self._gen_val, self._powers)})
         mock_parse_data = MockAppOutput(report_df)
         gov_result, bal_result = analysis.plot_process(mock_parse_data)
         for pow in self._powers:

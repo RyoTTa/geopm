@@ -43,6 +43,7 @@
 #include "PlatformIO.hpp"
 #include "PlatformTopo.hpp"
 #include "Helper.hpp"
+#include "ProfileTracer.hpp"
 #include "config.h"
 
 namespace geopm
@@ -51,6 +52,7 @@ namespace geopm
                                            EpochRuntimeRegulator &epoch_regulator)
         : m_epoch_regulator(epoch_regulator)
         , m_thread_progress(cpu_rank.size(), NAN)
+        , m_profile_tracer(geopm::make_unique<ProfileTracerImp>())
     {
         // This object is created when app connects
         geopm_time(&m_app_start_time);
@@ -117,6 +119,7 @@ namespace geopm
     void ProfileIOSampleImp::update(std::vector<std::pair<uint64_t, struct geopm_prof_message_s> >::const_iterator prof_sample_begin,
                                     std::vector<std::pair<uint64_t, struct geopm_prof_message_s> >::const_iterator prof_sample_end)
     {
+        m_profile_tracer->update(prof_sample_begin, prof_sample_end);
         for (auto sample_it = prof_sample_begin; sample_it != prof_sample_end; ++sample_it) {
             auto rank_idx_it = m_rank_idx_map.find(sample_it->second.rank);
 #ifdef GEOPM_DEBUG
@@ -256,6 +259,7 @@ namespace geopm
     std::vector<double> ProfileIOSampleImp::per_cpu_runtime(uint64_t region_id) const
     {
         std::vector<double> result(m_cpu_rank.size(), 0.0);
+        region_id = geopm_region_id_unset_mpi(region_id); // signal should return runtime for outer region only
         const std::vector<double> &rank_runtimes = m_epoch_regulator.region_regulator(region_id).per_rank_last_runtime();
         int cpu_idx = 0;
         for (auto rank : m_cpu_rank) {
@@ -267,6 +271,26 @@ namespace geopm
             }
 #endif
             result[cpu_idx] = rank_runtimes[rank];
+            ++cpu_idx;
+        }
+        return result;
+    }
+
+    std::vector<int64_t> ProfileIOSampleImp::per_cpu_count() const
+    {
+        std::vector<int64_t> result(m_cpu_rank.size(), 0);
+        int cpu_idx = 0;
+        for (auto rank : m_cpu_rank) {
+#ifdef GEOPM_DEBUG
+            if (rank >= (int)result.size()) {
+                throw Exception("ProfileIOSampleImp::per_cpu_count: node-local rank "
+                                "for rank " + std::to_string(rank) + " not found in map.",
+                                GEOPM_ERROR_LOGIC, __FILE__, __LINE__);
+            }
+#endif
+            uint64_t region_id = m_region_id[m_cpu_rank[cpu_idx]];
+            region_id = geopm_region_id_unset_mpi(region_id); // signal should return count for outer region only
+            result[cpu_idx] = m_epoch_regulator.region_regulator(region_id).per_rank_count()[rank];
             ++cpu_idx;
         }
         return result;

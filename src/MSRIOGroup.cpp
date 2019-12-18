@@ -44,7 +44,7 @@
 
 #include "geopm_sched.h"
 #include "geopm_hash.h"
-#include "geopm_env.h"
+#include "Environment.hpp"
 #include "Exception.hpp"
 #include "Agg.hpp"
 #include "MSR.hpp"
@@ -85,7 +85,7 @@ namespace geopm
         , m_per_cpu_restore(m_num_cpu)
         , m_is_fixed_enabled(false)
     {
-        m_msr_arr = init_msr_arr(cpuid);
+        m_msr_arr = init_msr_arr(m_cpuid);
         for (const auto &msr_ptr : m_msr_arr) {
             m_name_msr_map.insert(std::pair<std::string, const MSR &>(msr_ptr->name(), *msr_ptr));
             for (int idx = 0; idx < msr_ptr->num_signal(); idx++) {
@@ -119,6 +119,28 @@ namespace geopm
 
         register_msr_signal("TIMESTAMP_COUNTER", "MSR::TIME_STAMP_COUNTER:TIMESTAMP_COUNT");
         register_msr_signal("FREQUENCY",         "MSR::PERF_STATUS:FREQ");
+
+        std::string max_turbo_name;
+        switch (m_cpuid) {
+            case MSRIOGroup::M_CPUID_KNL:
+                max_turbo_name = "MSR::TURBO_RATIO_LIMIT:GROUP_0_MAX_RATIO_LIMIT";
+                break;
+            case MSRIOGroup::M_CPUID_SNB:
+            case MSRIOGroup::M_CPUID_IVT:
+            case MSRIOGroup::M_CPUID_HSX:
+            case MSRIOGroup::M_CPUID_HSX2:
+            case MSRIOGroup::M_CPUID_BDX:
+                max_turbo_name = "MSR::TURBO_RATIO_LIMIT:MAX_RATIO_LIMIT_1CORE";
+                break;
+            case MSRIOGroup::M_CPUID_SKX:
+                max_turbo_name = "MSR::TURBO_RATIO_LIMIT:MAX_RATIO_LIMIT_0";
+                break;
+            default:
+                throw Exception("MSRIOGroup: Unsupported CPUID",
+                                GEOPM_ERROR_RUNTIME, __FILE__, __LINE__);
+        }
+        register_msr_signal("FREQUENCY_MAX", max_turbo_name);
+
         register_msr_signal("ENERGY_PACKAGE",    "MSR::PKG_ENERGY_STATUS:ENERGY");
         register_msr_signal("ENERGY_DRAM",       "MSR::DRAM_ENERGY_STATUS:ENERGY");
         register_msr_signal("INSTRUCTIONS_RETIRED", "MSR::FIXED_CTR0:INST_RETIRED_ANY");
@@ -495,7 +517,7 @@ namespace geopm
                 }
                 catch (const Exception &e) {
                     if (!do_skip) {
-                        std::cerr << e.what() << std::endl;
+                        std::cerr << "Warning: " << e.what() << std::endl;
                     }
                     do_skip = true;
                 }
@@ -519,7 +541,7 @@ namespace geopm
                                        pair_it.second.mask);
                 }
                 catch (const Exception &e) {
-                    std::cerr << e.what() << std::endl;
+                    std::cerr << "Warning: " << e.what() << std::endl;
                 }
             }
             ++cpu_idx;
@@ -664,6 +686,9 @@ namespace geopm
             cpu_signal[cpu_idx] = std::make_shared<MSRSignalImp>(msr_obj, msr_obj.domain_type(), cpu_idx, signal_idx);
         }
 
+        // Record the units in the map
+        m_signal_units_map[signal_name] = msr_obj.units(signal_idx);
+
         // Set up aggregation for the alias
         auto func = agg_function(msr_name_field);
         m_func_map[signal_name] = func;
@@ -781,6 +806,35 @@ namespace geopm
         return result;
     }
 
+    std::function<std::string(double)> MSRIOGroup::format_function(const std::string &signal_name) const
+    {
+        if (!is_valid_signal(signal_name)) {
+            throw Exception("MSRIOGroup::format_function(): signal_name " + signal_name +
+                            " not valid for MSRIOGroup",
+                            GEOPM_ERROR_INVALID, __FILE__, __LINE__);
+        }
+        std::function<std::string(double)> result = string_format_double;
+        if (string_ends_with(signal_name, "#")) {
+            result = string_format_raw64;
+        }
+        else {
+            auto it = m_signal_units_map.find(signal_name);
+            if (it != m_signal_units_map.end()) {
+                int units = it->second;
+                if (MSR::M_UNITS_NONE == units) {
+                    result = string_format_integer;
+                }
+            }
+#ifdef GEOPM_DEBUG
+            else {
+                throw Exception("MSRIOGroup::format_function(): signal valid but not found in map",
+                                GEOPM_ERROR_LOGIC, __FILE__, __LINE__);
+            }
+#endif
+        }
+        return result;
+    }
+
     std::string MSRIOGroup::signal_description(const std::string &signal_name) const
     {
         if (!is_valid_signal(signal_name)) {
@@ -821,6 +875,7 @@ namespace geopm
                 msr_arr_platform = MSRIOGroup::parse_json_msrs(knl_msr_json());
                 break;
             case MSRIOGroup::M_CPUID_HSX:
+            case MSRIOGroup::M_CPUID_HSX2:
             case MSRIOGroup::M_CPUID_BDX:
                 msr_arr_platform = MSRIOGroup::parse_json_msrs(hsx_msr_json());
                 break;
@@ -829,6 +884,7 @@ namespace geopm
                 msr_arr_platform = MSRIOGroup::parse_json_msrs(snb_msr_json());
                 break;
             case MSRIOGroup::M_CPUID_SKX:
+            case MSRIOGroup::M_CPUID_SKX2:
                 msr_arr_platform = MSRIOGroup::parse_json_msrs(skx_msr_json());
                 break;
             default:
@@ -836,10 +892,10 @@ namespace geopm
                                 GEOPM_ERROR_RUNTIME, __FILE__, __LINE__);
         }
         // search path for additional json files to parse
-        const char *env_plugin_path = geopm_env_plugin_path();
+        std::string env_plugin_path = environment().plugin_path();
         std::vector<std::string> plugin_paths {GEOPM_DEFAULT_PLUGIN_PATH};
-        if (env_plugin_path) {
-            std::vector<std::string> dirs = string_split(std::string(env_plugin_path), ":");
+        if (!env_plugin_path.empty()) {
+            std::vector<std::string> dirs = string_split(env_plugin_path, ":");
             plugin_paths.insert(plugin_paths.end(), dirs.begin(), dirs.end());
         }
         std::vector<std::unique_ptr<MSR> > msr_arr_custom;

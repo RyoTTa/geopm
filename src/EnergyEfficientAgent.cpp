@@ -55,22 +55,34 @@ using json11::Json;
 namespace geopm
 {
     EnergyEfficientAgent::EnergyEfficientAgent()
-        : EnergyEfficientAgent(platform_io(), platform_topo(), FrequencyGovernor::make_unique())
+        : EnergyEfficientAgent(platform_io(), platform_topo(),
+                               FrequencyGovernor::make_shared(),
+                               std::map<uint64_t, std::shared_ptr<EnergyEfficientRegion> >())
     {
 
     }
 
     EnergyEfficientAgent::EnergyEfficientAgent(PlatformIO &plat_io, const PlatformTopo &topo,
-                                               std::unique_ptr<FrequencyGovernor> gov)
+                                               std::shared_ptr<FrequencyGovernor> gov,
+                                               std::map<uint64_t, std::shared_ptr<EnergyEfficientRegion> > region_map)
         : M_PRECISION(16)
+        , M_WAIT_SEC(0.005)
+        , M_MIN_LEARNING_RUNTIME(M_WAIT_SEC * 10)
+        , M_NETWORK_NUM_SAMPLE_DELAY(2)
+        , M_UNMARKED_NUM_SAMPLE_DELAY(2)
+        , M_POLICY_PERF_MARGIN_DEFAULT(0.10)  // max 10% performance degradation
         , m_platform_io(plat_io)
         , m_platform_topo(topo)
-        , m_freq_governor(std::move(gov))
-        , m_num_freq_ctl_domain(-1)
+        , m_freq_governor(gov)
+        , m_freq_ctl_domain_type(m_freq_governor->frequency_domain_type())
+        , m_num_freq_ctl_domain(m_platform_topo.num_domain(m_freq_ctl_domain_type))
+        , m_region_map(m_num_freq_ctl_domain, region_map)
+        , m_samples_since_boundary(m_num_freq_ctl_domain)
         , m_last_wait(GEOPM_TIME_REF)
         , m_level(-1)
         , m_num_children(0)
         , m_do_send_policy(false)
+        , m_perf_margin(M_POLICY_PERF_MARGIN_DEFAULT)
     {
 
     }
@@ -97,26 +109,39 @@ namespace geopm
         }
     }
 
-    bool EnergyEfficientAgent::update_freq_range(const std::vector<double> &in_policy)
+    bool EnergyEfficientAgent::update_policy(const std::vector<double> &in_policy)
     {
 #ifdef GEOPM_DEBUG
         if (in_policy.size() != M_NUM_POLICY) {
-            throw Exception("EnergyEfficientAgent::" + std::string(__func__) + "(): in_policy vector not correctly sized.",
+            throw Exception("EnergyEfficientAgent::" + std::string(__func__) +
+                            "(): in_policy vector not correctly sized.",
                             GEOPM_ERROR_LOGIC, __FILE__, __LINE__);
         }
 #endif
-        return m_freq_governor->set_frequency_bounds(in_policy[M_POLICY_FREQ_MIN], in_policy[M_POLICY_FREQ_MAX]);;
+        m_perf_margin = in_policy[M_POLICY_PERF_MARGIN];
+        // @todo: to support dynamic policies, policy values need to be passed to regions
+        return m_freq_governor->set_frequency_bounds(in_policy[M_POLICY_FREQ_MIN],
+                                                     in_policy[M_POLICY_FREQ_MAX]);
     }
 
     void EnergyEfficientAgent::validate_policy(std::vector<double> &policy) const
     {
 #ifdef GEOPM_DEBUG
         if (policy.size() != M_NUM_POLICY) {
-            throw Exception("EnergyEfficientAgent::" + std::string(__func__) + "(): policy vector not correctly sized.",
+            throw Exception("EnergyEfficientAgent::" + std::string(__func__) +
+                            "(): policy vector not correctly sized.",
                             GEOPM_ERROR_LOGIC, __FILE__, __LINE__);
         }
 #endif
-        m_freq_governor->validate_policy(policy[M_POLICY_FREQ_MIN], policy[M_POLICY_FREQ_MAX]);
+        if (std::isnan(policy[M_POLICY_PERF_MARGIN])) {
+            policy[M_POLICY_PERF_MARGIN] = M_POLICY_PERF_MARGIN_DEFAULT;
+        }
+        else if (policy[M_POLICY_PERF_MARGIN] < 0.0 || policy[M_POLICY_PERF_MARGIN] > 1.0) {
+            throw Exception("EnergyEfficientAgent::" + std::string(__func__) + "(): performance margin must be between 0.0 and 1.0.",
+                            GEOPM_ERROR_INVALID, __FILE__, __LINE__);
+        }
+        m_freq_governor->validate_policy(policy[M_POLICY_FREQ_MIN],
+                                         policy[M_POLICY_FREQ_MAX]);
     }
 
     void EnergyEfficientAgent::split_policy(const std::vector<double> &in_policy,
@@ -124,23 +149,22 @@ namespace geopm
     {
 #ifdef GEOPM_DEBUG
         if (out_policy.size() != (size_t) m_num_children) {
-            throw Exception("EnergyEfficientAgent::" + std::string(__func__) + "(): out_policy vector not correctly sized.",
+            throw Exception("EnergyEfficientAgent::" + std::string(__func__) +
+                            "(): out_policy vector not correctly sized.",
                             GEOPM_ERROR_LOGIC, __FILE__, __LINE__);
         }
+        for (auto &child_policy : out_policy) {
+            if (child_policy.size() != M_NUM_POLICY) {
+                throw Exception("EnergyEfficientAgent::" + std::string(__func__) +
+                                "(): child_policy vector not correctly sized.",
+                                GEOPM_ERROR_LOGIC, __FILE__, __LINE__);
+            }
+        }
 #endif
-        m_do_send_policy = false | update_freq_range(in_policy);
+        m_do_send_policy = update_policy(in_policy);
 
         if (m_do_send_policy) {
-            for (auto &child_policy : out_policy) {
-#ifdef GEOPM_DEBUG
-                if (child_policy.size() != M_NUM_POLICY) {
-                    throw Exception("EnergyEfficientAgent::" + std::string(__func__) + "(): child_policy vector not correctly sized.",
-                                    GEOPM_ERROR_LOGIC, __FILE__, __LINE__);
-                }
-#endif
-                child_policy[M_POLICY_FREQ_MIN] = in_policy[M_POLICY_FREQ_MIN];
-                child_policy[M_POLICY_FREQ_MAX] = in_policy[M_POLICY_FREQ_MAX];
-            }
+            std::fill(out_policy.begin(), out_policy.end(), in_policy);
         }
     }
 
@@ -152,6 +176,7 @@ namespace geopm
     void EnergyEfficientAgent::aggregate_sample(const std::vector<std::vector<double> > &in_sample,
                                                 std::vector<double> &out_sample)
     {
+
     }
 
     bool EnergyEfficientAgent::do_write_batch(void) const
@@ -161,21 +186,34 @@ namespace geopm
 
     void EnergyEfficientAgent::adjust_platform(const std::vector<double> &in_policy)
     {
-        update_freq_range(in_policy);
-        double freq_max = m_freq_governor->get_frequency_max();
-        std::vector<double> target_freq(m_num_freq_ctl_domain, freq_max);
+        update_policy(in_policy);
         for (size_t ctl_idx = 0; ctl_idx < (size_t) m_num_freq_ctl_domain; ++ctl_idx) {
-            auto it = m_adapt_freq_map.find(m_last_region[ctl_idx].hash);
-            if (GEOPM_REGION_HASH_INVALID != m_last_region[ctl_idx].hash &&
-                it != m_adapt_freq_map.end()) {
-                target_freq[ctl_idx] = m_adapt_freq_map[m_last_region[ctl_idx].hash];
+            uint64_t hash = m_last_region_info[ctl_idx].hash;
+            uint64_t hint = m_last_region_info[ctl_idx].hint;
+            int samples = m_samples_since_boundary[ctl_idx];
+            if (GEOPM_REGION_HASH_UNMARKED == hash) {
+                if (M_UNMARKED_NUM_SAMPLE_DELAY < samples) {
+                    m_target_freq[ctl_idx] = m_freq_governor->get_frequency_max();
+                }
             }
-            else if (GEOPM_REGION_HASH_INVALID != m_last_region[ctl_idx].hash) {
-                throw Exception("EnergyEfficientAgent::" + std::string(__func__) + "(): unknown target frequency.",
-                                GEOPM_ERROR_RUNTIME, __FILE__, __LINE__);
+            else if (GEOPM_REGION_HINT_NETWORK == hint) {
+                if (M_NETWORK_NUM_SAMPLE_DELAY < samples) {
+                    m_target_freq[ctl_idx] = m_freq_governor->get_frequency_min();
+                }
+            }
+            else {
+                auto region_it = m_region_map[ctl_idx].find(hash);
+                if (region_it != m_region_map[ctl_idx].end()) {
+                    m_target_freq[ctl_idx] = region_it->second->freq();
+                }
+                else {
+                    throw Exception("EnergyEfficientAgent::" + std::string(__func__) +
+                                    "(): unknown target frequency hash = " + std::to_string(hash),
+                                    GEOPM_ERROR_RUNTIME, __FILE__, __LINE__);
+                }
             }
         }
-        m_freq_governor->adjust_platform(target_freq);
+        m_freq_governor->adjust_platform(m_target_freq);
     }
 
     void EnergyEfficientAgent::sample_platform(std::vector<double> &out_sample)
@@ -184,52 +222,48 @@ namespace geopm
         double freq_max = m_freq_governor->get_frequency_max();
         double freq_step = m_freq_governor->get_frequency_step();
         for (size_t ctl_idx = 0; ctl_idx < (size_t) m_num_freq_ctl_domain; ++ctl_idx) {
-            const uint64_t current_region_hash = m_platform_io.sample(m_signal_idx[M_SIGNAL_REGION_HASH][ctl_idx]);
-            const uint64_t current_region_hint = m_platform_io.sample(m_signal_idx[M_SIGNAL_REGION_HINT][ctl_idx]);
-            const double current_region_runtime = m_platform_io.sample(m_signal_idx[M_SIGNAL_REGION_RUNTIME][ctl_idx]);
-            const bool is_region_boundary = m_last_region[ctl_idx].hash != current_region_hash;
-            /// update current region (entry)
-            if (is_region_boundary) {
-                const bool curr_region_is_invalid = current_region_hash == GEOPM_REGION_HASH_INVALID;
-                double target_freq = NAN;
-                if (current_region_hint == GEOPM_REGION_HINT_COMPUTE ||
-                    current_region_hint == GEOPM_REGION_HASH_UNMARKED) {
-                    /// Compute regions are assigned maximum frequency, no learning
-                    target_freq = freq_max;
-                }
-                else if (!curr_region_is_invalid) {
+            struct m_region_info_s current_region_info {
+                .hash = (uint64_t)m_platform_io.sample(m_signal_idx[M_SIGNAL_REGION_HASH][ctl_idx]),
+                .hint = (uint64_t)m_platform_io.sample(m_signal_idx[M_SIGNAL_REGION_HINT][ctl_idx]),
+                .runtime = m_platform_io.sample(m_signal_idx[M_SIGNAL_REGION_RUNTIME][ctl_idx]),
+                .count = (uint64_t)m_platform_io.sample(m_signal_idx[M_SIGNAL_REGION_COUNT][ctl_idx])};
+            // If region hash has changed, or region count changed for the same region
+            // update current region (entry)
+            if (m_last_region_info[ctl_idx].hash != current_region_info.hash ||
+                m_last_region_info[ctl_idx].count != current_region_info.count) {
+                m_samples_since_boundary[ctl_idx] = 0;
+                if (current_region_info.hash != GEOPM_REGION_HASH_UNMARKED &&
+                    current_region_info.hint != GEOPM_REGION_HINT_NETWORK) {
                     /// set the freq for the current region (entry)
-                    auto curr_region_it = m_region_map.find(current_region_hash);
-                    if (curr_region_it == m_region_map.end()) {
-                        auto tmp = m_region_map.emplace(current_region_hash, geopm::make_unique<EnergyEfficientRegion>
-                                                        (freq_min, freq_max, freq_step));
-                        curr_region_it = tmp.first;
+                    auto current_region_it = m_region_map[ctl_idx].find(current_region_info.hash);
+                    if (current_region_it == m_region_map[ctl_idx].end()) {
+                        auto tmp = m_region_map[ctl_idx].emplace(current_region_info.hash,
+                                                                 std::make_shared<EnergyEfficientRegionImp>
+                                                                 (freq_min, freq_max, freq_step, m_perf_margin));
+                        current_region_it = tmp.first;
                     }
-                    target_freq = curr_region_it->second->freq();
                 }
-                else {
-                    throw Exception("EnergyEfficientAgent::" + std::string(__func__) + "(): unexpected (region hash:hint)",
-                                    GEOPM_ERROR_RUNTIME, __FILE__, __LINE__);
-                }
-                m_adapt_freq_map[current_region_hash] = target_freq;
-            }
-            /// update previous region (exit)
-            if (is_region_boundary) {
-                const uint64_t last_region_hash = m_last_region[ctl_idx].hash;
-                const uint64_t last_region_hint = m_last_region[ctl_idx].hint;
-                // Higher is better for performance, so negate
-                const double last_region_perf_metric = -1.0 * m_last_region[ctl_idx].runtime;
-                if (last_region_hash != GEOPM_REGION_HASH_INVALID &&
-                    last_region_hash != GEOPM_REGION_HASH_UNMARKED &&
-                    last_region_hint != GEOPM_REGION_HINT_COMPUTE) {
-                    auto last_region_it = m_region_map.find(last_region_hash);
-                    if (last_region_it == m_region_map.end()) {
-                        throw Exception("EnergyEfficientAgent::" + std::string(__func__) + "(): region exit before entry detected.",
+                /// update previous region (exit)
+                struct m_region_info_s last_region_info = m_last_region_info[ctl_idx];
+                if (last_region_info.hash != GEOPM_REGION_HASH_UNMARKED &&
+                    last_region_info.hint != GEOPM_REGION_HINT_NETWORK) {
+                    auto last_region_it = m_region_map[ctl_idx].find(last_region_info.hash);
+                    if (last_region_it == m_region_map[ctl_idx].end()) {
+                        throw Exception("EnergyEfficientAgent::" + std::string(__func__) +
+                                        "(): region exit before entry detected.",
                                         GEOPM_ERROR_RUNTIME, __FILE__, __LINE__);
                     }
-                    last_region_it->second->update_exit(last_region_perf_metric);
+                    if (last_region_info.runtime != 0.0 &&
+                        last_region_info.runtime < M_MIN_LEARNING_RUNTIME) {
+                        last_region_it->second->disable();
+                    }
+                    // Higher is better for performance, so negate
+                    last_region_it->second->update_exit(-1.0 * last_region_info.runtime);
                 }
-                m_last_region[ctl_idx] = {current_region_hash, current_region_hint, 0, current_region_runtime};
+                m_last_region_info[ctl_idx] = current_region_info;
+            }
+            else {
+                ++m_samples_since_boundary[ctl_idx];
             }
         }
     }
@@ -241,7 +275,6 @@ namespace geopm
 
     void EnergyEfficientAgent::wait(void)
     {
-        static double M_WAIT_SEC = 0.005;
         while(geopm_time_since(&m_last_wait) < M_WAIT_SEC) {
 
         }
@@ -250,7 +283,7 @@ namespace geopm
 
     std::vector<std::string> EnergyEfficientAgent::policy_names(void)
     {
-        return {"FREQ_MIN", "FREQ_MAX"};
+        return {"FREQ_MIN", "FREQ_MAX", "PERF_MARGIN"};
     }
 
     std::vector<std::string> EnergyEfficientAgent::sample_names(void)
@@ -265,14 +298,15 @@ namespace geopm
 
     std::vector<std::pair<std::string, std::string> > EnergyEfficientAgent::report_host(void) const
     {
+        auto region_freq_map = report_region();
         std::vector<std::pair<std::string, std::string> > result;
         std::ostringstream oss;
         oss << std::setprecision(EnergyEfficientAgent::M_PRECISION) << std::scientific;
-        for (const auto &region : m_region_map) {
-            oss << "\n\t0x" << std::hex << std::setfill('0') << std::setw(16) << std::fixed;
+        for (const auto &region : region_freq_map) {
+            oss << "\n    0x" << std::hex << std::setfill('0') << std::setw(16) << std::fixed;
             oss << region.first;
             oss << std::setfill('\0') << std::setw(0) << std::scientific;
-            oss << ":" << region.second->freq();
+            oss << ": " << region.second[0].second;  // Only item in the vector is requested frequency
         }
         oss << "\n";
         result.push_back({"Final online freq map", oss.str()});
@@ -283,10 +317,28 @@ namespace geopm
     std::map<uint64_t, std::vector<std::pair<std::string, std::string> > > EnergyEfficientAgent::report_region(void) const
     {
         std::map<uint64_t, std::vector<std::pair<std::string, std::string> > > result;
-        // If region is in this map, online learning was used to set frequency
-        for (const auto &region : m_region_map) {
+        std::map<uint64_t, std::pair<double, double> > region_frequency_count_map;
+        for (const auto &region_map_it : m_region_map) {
+            // If region is in this map, online learning was used to set frequency
+            for (const auto &region : region_map_it) {
+                if (!region.second->is_learning()) {
+                    auto it = region_frequency_count_map.find(region.first);
+                    if (it == region_frequency_count_map.end()) {
+                        region_frequency_count_map[region.first] = std::make_pair(region.second->freq(), 1.0);
+                    }
+                    else {
+                        it->second.first += region.second->freq();
+                        it->second.second += 1.0;
+                    }
+                }
+            }
+        }
+        for (const auto &it : region_frequency_count_map) {
             /// @todo re-implement with m_region_map and m_hash_freq_map keys as pair (hash + hint)
-            result[region.first].push_back(std::make_pair("requested-online-frequency", std::to_string(region.second->freq())));
+            // Average frequencies for all domains that completed learning
+            double requested_freq = it.second.first / it.second.second;
+            result[it.first].push_back(std::make_pair("requested-online-frequency",
+                                                      std::to_string(requested_freq)));
         }
         return result;
     }
@@ -296,29 +348,41 @@ namespace geopm
         return {};
     }
 
+    std::vector<std::function<std::string(double)> > EnergyEfficientAgent::trace_formats(void) const
+    {
+        return {};
+    }
+
     void EnergyEfficientAgent::trace_values(std::vector<double> &values)
     {
+
+    }
+
+    void EnergyEfficientAgent::enforce_policy(const std::vector<double> &policy) const
+    {
+        if (policy.size() != M_NUM_POLICY) {
+            throw Exception("EnergyEfficientAgent::enforce_policy(): policy vector incorrectly sized.",
+                            GEOPM_ERROR_INVALID, __FILE__, __LINE__);
+        }
+        m_platform_io.write_control("FREQUENCY", GEOPM_DOMAIN_BOARD, 0, policy[M_POLICY_FREQ_MAX]);
     }
 
     void EnergyEfficientAgent::init_platform_io(void)
     {
         m_freq_governor->init_platform_io();
-        const int freq_ctl_domain_type = m_freq_governor->frequency_domain_type();
-        m_num_freq_ctl_domain = m_platform_topo.num_domain(freq_ctl_domain_type);
-        m_last_region = std::vector<struct geopm_region_info_s>(m_num_freq_ctl_domain,
-                                                          (struct geopm_region_info_s) {
-                                                          .hash = GEOPM_REGION_HASH_INVALID,
-                                                          .hint = GEOPM_REGION_HINT_UNKNOWN,
-                                                          .progress = 0,
-                                                          .runtime = 0});
-
-        std::vector<std::string> signal_names = {"REGION_HASH", "REGION_HINT", "REGION_RUNTIME"};
+        const struct m_region_info_s DEFAULT_REGION { .hash = GEOPM_REGION_HASH_UNMARKED,
+                                                      .hint = GEOPM_REGION_HINT_UNKNOWN,
+                                                      .runtime = 0.0,
+                                                      .count = 0};
+        m_last_region_info = std::vector<struct m_region_info_s>(m_num_freq_ctl_domain, DEFAULT_REGION);
+        m_target_freq.resize(m_num_freq_ctl_domain, m_freq_governor->get_frequency_max());
+        std::vector<std::string> signal_names = {"REGION_HASH", "REGION_HINT", "REGION_RUNTIME", "REGION_COUNT"};
 
         for (size_t sig_idx = 0; sig_idx < signal_names.size(); ++sig_idx) {
             m_signal_idx.push_back(std::vector<int>());
-            for (size_t ctl_idx = 0; ctl_idx < (size_t) m_num_freq_ctl_domain; ++ctl_idx) {
+            for (int ctl_idx = 0; ctl_idx < m_num_freq_ctl_domain; ++ctl_idx) {
                 m_signal_idx[sig_idx].push_back(m_platform_io.push_signal(signal_names[sig_idx],
-                            freq_ctl_domain_type, ctl_idx));
+                            m_freq_ctl_domain_type, ctl_idx));
             }
         }
     }

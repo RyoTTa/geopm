@@ -54,10 +54,20 @@ using ::testing::Return;
 using ::testing::Sequence;
 using ::testing::InvokeWithoutArgs;
 using ::testing::InSequence;
+using ::testing::AtLeast;
+
+bool is_format_double(std::function<std::string(double)> func);
+bool is_format_float(std::function<std::string(double)> func);
+bool is_format_integer(std::function<std::string(double)> func);
+bool is_format_hex(std::function<std::string(double)> func);
+bool is_format_raw64(std::function<std::string(double)> func);
+
 
 class PowerBalancerAgentTest : public ::testing::Test
 {
     protected:
+        void SetUp();
+
         enum {
             M_SIGNAL_EPOCH_COUNT,
             M_SIGNAL_EPOCH_RUNTIME,
@@ -72,9 +82,15 @@ class PowerBalancerAgentTest : public ::testing::Test
         std::unique_ptr<PowerBalancerAgent> m_agent;
 
         const double M_POWER_PACKAGE_MAX = 325;
-        const int M_NUM_PKGS = 1;
+        const int M_NUM_PKGS = 2;
         const std::vector<int> M_FAN_IN = {2, 2};
 };
+
+void PowerBalancerAgentTest::SetUp()
+{
+    m_power_gov = geopm::make_unique<MockPowerGovernor>();
+    m_power_bal = geopm::make_unique<MockPowerBalancer>();
+}
 
 TEST_F(PowerBalancerAgentTest, power_balancer_agent)
 {
@@ -86,6 +102,7 @@ TEST_F(PowerBalancerAgentTest, power_balancer_agent)
                                                     "MAX_EPOCH_RUNTIME",
                                                     "SUM_POWER_SLACK",
                                                     "MIN_POWER_HEADROOM"};
+    MockPowerGovernor *power_gov_p = m_power_gov.get();
     m_agent = geopm::make_unique<PowerBalancerAgent>(m_platform_io, m_platform_topo,
                                                      std::move(m_power_gov), std::move(m_power_bal));
 
@@ -97,7 +114,15 @@ TEST_F(PowerBalancerAgentTest, power_balancer_agent)
     m_agent->report_region();
     m_agent->wait();
 
-    GEOPM_EXPECT_THROW_MESSAGE(m_agent->init(0, {}, false), GEOPM_ERROR_RUNTIME, "single node job detected, user power_governor.");
+    // check that single-node balancer can be initialized
+    EXPECT_CALL(m_platform_topo, num_domain(_)).Times(AtLeast(1));
+    EXPECT_CALL(m_platform_io, read_signal("POWER_PACKAGE_MAX", _, _));
+    EXPECT_CALL(*power_gov_p, init_platform_io());
+    EXPECT_CALL(m_platform_io, push_signal("EPOCH_RUNTIME", _, _));
+    EXPECT_CALL(m_platform_io, push_signal("EPOCH_COUNT", _, _));
+    EXPECT_CALL(m_platform_io, push_signal("EPOCH_RUNTIME_MPI", _, _));
+    EXPECT_CALL(m_platform_io, push_signal("EPOCH_RUNTIME_IGNORE", _, _));
+    m_agent->init(0, {}, false);
 }
 
 TEST_F(PowerBalancerAgentTest, tree_root_agent)
@@ -133,7 +158,6 @@ TEST_F(PowerBalancerAgentTest, tree_root_agent)
 #ifdef GEOPM_DEBUG
     GEOPM_EXPECT_THROW_MESSAGE(m_agent->adjust_platform(in_policy), GEOPM_ERROR_LOGIC, "was called on non-leaf agent");
     GEOPM_EXPECT_THROW_MESSAGE(m_agent->sample_platform(out_sample), GEOPM_ERROR_LOGIC, "was called on non-leaf agent");
-    GEOPM_EXPECT_THROW_MESSAGE(m_agent->trace_names(), GEOPM_ERROR_LOGIC, "was called on non-leaf agent");
     std::vector<double> trace_data;
     GEOPM_EXPECT_THROW_MESSAGE(m_agent->trace_values(trace_data), GEOPM_ERROR_LOGIC, "was called on non-leaf agent");
 #endif
@@ -260,7 +284,6 @@ TEST_F(PowerBalancerAgentTest, tree_agent)
 #ifdef GEOPM_DEBUG
     GEOPM_EXPECT_THROW_MESSAGE(m_agent->adjust_platform(in_policy), GEOPM_ERROR_LOGIC, "was called on non-leaf agent");
     GEOPM_EXPECT_THROW_MESSAGE(m_agent->sample_platform(out_sample), GEOPM_ERROR_LOGIC, "was called on non-leaf agent");
-    GEOPM_EXPECT_THROW_MESSAGE(m_agent->trace_names(), GEOPM_ERROR_LOGIC, "was called on non-leaf agent");
     std::vector<double> trace_data;
     GEOPM_EXPECT_THROW_MESSAGE(m_agent->trace_values(trace_data), GEOPM_ERROR_LOGIC, "was called on non-leaf agent");
 #endif
@@ -374,13 +397,23 @@ TEST_F(PowerBalancerAgentTest, leaf_agent)
     int counter = 0;
     std::vector<double> trace_vals(7, NAN);
     std::vector<double> exp_trace_vals(7, NAN);
-    const std::vector<std::string> trace_cols = {"policy_power_cap",
-                                                 "policy_step_count",
-                                                 "policy_max_epoch_runtime",
-                                                 "policy_power_slack",
-                                                 "epoch_runtime",
-                                                 "power_limit",
-                                                 "enforced_power_limit"};
+    const std::vector<std::string> trace_cols {
+        "POLICY_POWER_CAP",
+        "POLICY_STEP_COUNT",
+        "POLICY_MAX_EPOCH_RUNTIME",
+        "POLICY_POWER_SLACK",
+        "EPOCH_RUNTIME",
+        "POWER_LIMIT",
+        "ENFORCED_POWER_LIMIT"};
+    const std::vector<std::function<std::string(double)> > trace_formats {
+        geopm::string_format_double,
+        PowerBalancerAgent::format_step_count,
+        geopm::string_format_double,
+        geopm::string_format_double,
+        geopm::string_format_double,
+        geopm::string_format_double,
+        geopm::string_format_double};
+
     std::vector<double> epoch_rt_mpi = {0.50, 0.75};
     std::vector<double> epoch_rt_ignore = {0.25, 0.27};
     std::vector<double> epoch_rt = {1.0, 1.01};
@@ -426,7 +459,7 @@ TEST_F(PowerBalancerAgentTest, leaf_agent)
     EXPECT_CALL(*m_power_gov, init_platform_io());
     EXPECT_CALL(*m_power_gov, sample_platform())
         .Times(4);
-    double actual_limit = 299.0;
+    double actual_limit = 299.0 / M_NUM_PKGS;
     EXPECT_CALL(*m_power_gov, adjust_platform(300.0, _))
         .Times(4)
         .WillRepeatedly(SetArgReferee<1>(actual_limit));
@@ -447,6 +480,8 @@ TEST_F(PowerBalancerAgentTest, leaf_agent)
     exp_in = epoch_rt[1] - epoch_rt_mpi[1] - epoch_rt_ignore[1];
     EXPECT_CALL(*m_power_bal, is_target_met(exp_in))
         .WillRepeatedly(Return(true));
+    EXPECT_CALL(*m_power_bal, power_slack())
+        .WillRepeatedly(Return(0.0));
     EXPECT_CALL(*m_power_bal, power_cap(300.0))
         .Times(2);
     EXPECT_CALL(*m_power_bal, power_cap())
@@ -458,6 +493,25 @@ TEST_F(PowerBalancerAgentTest, leaf_agent)
     m_agent->init(level, M_FAN_IN, IS_ROOT);
 
     EXPECT_EQ(trace_cols, m_agent->trace_names());
+
+    auto expect_it = trace_formats.begin();
+    for (const auto &actual_it : m_agent->trace_formats()) {
+        EXPECT_EQ(is_format_double(*expect_it), is_format_double(actual_it));
+        EXPECT_EQ(is_format_float(*expect_it), is_format_float(actual_it));
+        EXPECT_EQ(is_format_integer(*expect_it), is_format_integer(actual_it));
+        EXPECT_EQ(is_format_hex(*expect_it), is_format_hex(actual_it));
+        EXPECT_EQ(is_format_raw64(*expect_it), is_format_raw64(actual_it));
+        ++expect_it;
+    }
+    auto fun = m_agent->trace_formats().at(1);
+
+    EXPECT_EQ("0-STEP_SEND_DOWN_LIMIT", fun(0));
+    EXPECT_EQ("0-STEP_MEASURE_RUNTIME", fun(1));
+    EXPECT_EQ("0-STEP_REDUCE_LIMIT", fun(2));
+    EXPECT_EQ("1-STEP_SEND_DOWN_LIMIT", fun(3));
+    EXPECT_EQ("1-STEP_MEASURE_RUNTIME", fun(4));
+    EXPECT_EQ("1-STEP_REDUCE_LIMIT", fun(5));
+
     std::vector<double> in_policy {NAN, NAN, NAN, NAN};
 
     std::vector<double> exp_out_sample;
@@ -523,7 +577,7 @@ TEST_F(PowerBalancerAgentTest, leaf_agent)
     /// M_STEP_REDUCE_LIMIT
     {
     in_policy = {0.0, curr_cnt, curr_epc, curr_slk};
-    exp_out_sample = {(double)ctl_step, curr_epc, 0.0, 25.0};
+    exp_out_sample = {(double)ctl_step, curr_epc, 0.0, 350.0};
 
     m_agent->adjust_platform(in_policy);
     adj_ret = m_agent->do_write_batch();
@@ -540,7 +594,7 @@ TEST_F(PowerBalancerAgentTest, leaf_agent)
     /// M_STEP_SEND_DOWN_LIMIT
     {
     in_policy = {0.0, curr_cnt, curr_epc, curr_slk};
-    exp_out_sample = {(double)ctl_step, curr_epc, 0.0, 25.0};
+    exp_out_sample = {(double)ctl_step, curr_epc, 0.0, 350.0};
 
     m_agent->adjust_platform(in_policy);
     adj_ret = m_agent->do_write_batch();
@@ -551,4 +605,24 @@ TEST_F(PowerBalancerAgentTest, leaf_agent)
     EXPECT_EQ(exp_smp_plat_ret, smp_ret);
     EXPECT_EQ(out_sample, exp_out_sample);
     }
+}
+
+TEST_F(PowerBalancerAgentTest, enforce_policy)
+{
+    const double limit = 100;
+    const std::vector<double> policy{limit, NAN, NAN, NAN};
+    const std::vector<double> bad_policy{100};
+
+    EXPECT_CALL(m_platform_io, control_domain_type("POWER_PACKAGE_LIMIT"))
+        .WillOnce(Return(GEOPM_DOMAIN_PACKAGE));
+    EXPECT_CALL(m_platform_topo, num_domain(GEOPM_DOMAIN_PACKAGE))
+        .WillOnce(Return(M_NUM_PKGS));
+    EXPECT_CALL(m_platform_io, write_control("POWER_PACKAGE_LIMIT", GEOPM_DOMAIN_BOARD,
+                                             0, limit/M_NUM_PKGS));
+
+    m_agent = geopm::make_unique<PowerBalancerAgent>(m_platform_io, m_platform_topo,
+                                                     std::move(m_power_gov), std::move(m_power_bal));
+    m_agent->enforce_policy(policy);
+
+    EXPECT_THROW(m_agent->enforce_policy(bad_policy), geopm::Exception);
 }

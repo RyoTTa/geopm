@@ -56,7 +56,8 @@ namespace geopm
         public:
             EnergyEfficientAgent();
             EnergyEfficientAgent(PlatformIO &plat_io, const PlatformTopo &topo,
-                                 std::unique_ptr<FrequencyGovernor> gov);
+                                 std::shared_ptr<FrequencyGovernor> gov,
+                                 std::map<uint64_t, std::shared_ptr<EnergyEfficientRegion> > region_map);
             virtual ~EnergyEfficientAgent() = default;
             void init(int level, const std::vector<int> &fan_in, bool is_level_root) override;
             void validate_policy(std::vector<double> &policy) const override;
@@ -74,19 +75,22 @@ namespace geopm
             std::vector<std::pair<std::string, std::string> > report_host(void) const override;
             std::map<uint64_t, std::vector<std::pair<std::string, std::string> > > report_region(void) const override;
             std::vector<std::string> trace_names(void) const override;
+            std::vector<std::function<std::string(double)> > trace_formats(void) const override;
             void trace_values(std::vector<double> &values) override;
+            void enforce_policy(const std::vector<double> &policy) const override;
 
             static std::string plugin_name(void);
             static std::unique_ptr<Agent> make_plugin(void);
             static std::vector<std::string> policy_names(void);
             static std::vector<std::string> sample_names(void);
         private:
-            bool update_freq_range(const std::vector<double> &in_policy);
+            bool update_policy(const std::vector<double> &in_policy);
             void init_platform_io(void);
 
             enum m_policy_e {
                 M_POLICY_FREQ_MIN,
                 M_POLICY_FREQ_MAX,
+                M_POLICY_PERF_MARGIN,
                 M_NUM_POLICY,
             };
 
@@ -94,22 +98,38 @@ namespace geopm
                 M_SIGNAL_REGION_HASH,
                 M_SIGNAL_REGION_HINT,
                 M_SIGNAL_REGION_RUNTIME,
+                M_SIGNAL_REGION_COUNT,
                 M_NUM_SIGNAL,
             };
 
+            struct m_region_info_s {
+                uint64_t hash;
+                uint64_t hint;
+                double runtime;
+                uint64_t count;
+            };
+
             const int M_PRECISION;
+            const double M_WAIT_SEC;
+            const double M_MIN_LEARNING_RUNTIME;
+            const int M_NETWORK_NUM_SAMPLE_DELAY;
+            const int M_UNMARKED_NUM_SAMPLE_DELAY;
+            const double M_POLICY_PERF_MARGIN_DEFAULT;
             PlatformIO &m_platform_io;
             const PlatformTopo &m_platform_topo;
-            std::unique_ptr<FrequencyGovernor> m_freq_governor;
+            std::shared_ptr<FrequencyGovernor> m_freq_governor;
+            int m_freq_ctl_domain_type;
             int m_num_freq_ctl_domain;
-            std::vector<struct geopm_region_info_s>  m_last_region;
-            std::map<uint64_t, double> m_adapt_freq_map;
-            std::map<uint64_t, std::unique_ptr<EnergyEfficientRegion> > m_region_map;
+            std::vector<struct m_region_info_s> m_last_region_info;
+            std::vector<double> m_target_freq;
+            std::vector<std::map<uint64_t, std::shared_ptr<EnergyEfficientRegion> > > m_region_map;
+            std::vector<int> m_samples_since_boundary;
             geopm_time_s m_last_wait;
             std::vector<std::vector<int> > m_signal_idx;
             int m_level;
             int m_num_children;
             bool m_do_send_policy;
+            double m_perf_margin;
     };
 }
 

@@ -52,11 +52,10 @@
 #include "TreeComm.hpp"
 #include "Exception.hpp"
 #include "Helper.hpp"
-#include "OMPT.hpp"
 #include "geopm.h"
 #include "geopm_hash.h"
 #include "geopm_version.h"
-#include "geopm_env.h"
+#include "Environment.hpp"
 #include "config.h"
 
 #ifdef GEOPM_HAS_XMMINTRIN
@@ -69,7 +68,7 @@ namespace geopm
                        PlatformIO &platform_io, const PlatformTopo &platform_topo, int rank)
         : ReporterImp(start_time, report_name, platform_io, platform_topo, rank,
                       std::unique_ptr<RegionAggregator>(new RegionAggregatorImp),
-                      geopm_env_report_signals())
+                      environment().report_signals())
     {
 
     }
@@ -120,7 +119,7 @@ namespace geopm
             if (!m_report_name.empty()) {
                 std::ofstream test_open(m_report_name);
                 if (!test_open.good()) {
-                    std::cerr << "Warning: unable to open report file '" << m_report_name
+                    std::cerr << "Warning: <geopm> Unable to open report file '" << m_report_name
                               << "' for writing: " << strerror(errno) << std::endl;
                 }
                 std::remove(m_report_name.c_str());
@@ -159,6 +158,16 @@ namespace geopm
             master_report << "Start Time: " << m_start_time << std::endl;
             master_report << "Profile: " << application_io.profile_name() << std::endl;
             master_report << "Agent: " << agent_name << std::endl;
+            std::string policy_str = "{}";
+            if (environment().policy().size() > 0) {
+                try {
+                    policy_str = read_file(environment().policy());
+                }
+                catch(...) {
+                    policy_str = "DYNAMIC";
+                }
+            }
+            master_report << "Policy: " << policy_str << std::endl;
             for (const auto &kv : agent_report_header) {
                 master_report << kv.first << ": " << kv.second << std::endl;
             }
@@ -180,12 +189,9 @@ namespace geopm
         auto region_name_set = application_io.region_name_set();
         for (const auto &region : region_name_set) {
             uint64_t region_hash = geopm_crc32_str(region.c_str());
-            std::string region_name = region;
-            ompt_pretty_name(region_name);
-
             int count = application_io.total_count(region_hash);
             if (count > 0) {
-                region_ordered.push_back({region_name,
+                region_ordered.push_back({region,
                                           region_hash,
                                           application_io.total_region_runtime(region_hash),
                                           count});
@@ -195,7 +201,7 @@ namespace geopm
         std::sort(region_ordered.begin(), region_ordered.end(),
                   [] (const region_info &a,
                       const region_info &b) -> bool {
-                      return a.per_rank_avg_runtime >= b.per_rank_avg_runtime;
+                      return a.per_rank_avg_runtime > b.per_rank_avg_runtime;
                   });
         // Add unmarked and epoch at the end
         // Note here we map the private region id notion of

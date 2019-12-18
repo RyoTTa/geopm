@@ -33,6 +33,10 @@
 GEOPM IO - Helper module for parsing/processing report and trace files.
 """
 
+from __future__ import absolute_import
+from __future__ import division
+
+from builtins import str
 import os
 import json
 import re
@@ -42,12 +46,18 @@ import glob
 import sys
 import subprocess
 import psutil
+import copy
+import tempfile
+import yaml
+import io
+
+from distutils.spawn import find_executable
 from natsort import natsorted
 from geopmpy import __version__
-
+from geopmpy import agent
 
 try:
-    _, os.environ['COLUMNS'] = subprocess.check_output(['stty', 'size']).split()
+    _, os.environ['COLUMNS'] = subprocess.check_output(['stty', 'size']).decode().split()
 except subprocess.CalledProcessError:
     os.environ['COLUMNS'] = "200"
 
@@ -90,28 +100,23 @@ class AppOutput(object):
         self._region_names = None
 
         if reports:
-            if type(reports) is str:
-                report_glob = os.path.join(dir_name, reports)
-                report_paths = natsorted(glob.glob(report_glob))
-                if len(report_paths) == 0:
-                    raise RuntimeError('No report files found with pattern {}.'.format(report_glob))
-            elif type(reports) is list:
+            if type(reports) is list:
                 report_paths = [os.path.join(dir_name, path) for path in reports]
             else:
-                raise TypeError('AppOutput: reports must be a list of paths or a glob pattern')
+                report_glob = os.path.join(dir_name, reports)
+                try:
+                    report_paths = glob.glob(report_glob)
+                except TypeError:
+                    raise TypeError('AppOutput: reports must be a list of paths or a glob pattern')
+                report_paths = natsorted(report_paths)
+                if len(report_paths) == 0:
+                    raise RuntimeError('No report files found with pattern {}.'.format(report_glob))
 
             self._all_paths.extend(report_paths)
 
             if do_cache:
-                # unique cache name based on report files in this list
-                # if all reports share a directory, put cache there
-                dirs = set()
-                for rr in report_paths:
-                    dirs.add(rr)
-                dirs = list(dirs)
-                h5_dir = dirs[0] if len(dirs) == 1 else '.'
                 paths_str = str(report_paths)
-                report_h5_name = os.path.join(dir_name, 'report_{}.h5'.format(hash(paths_str)))
+                report_h5_name = 'report_{}.h5'.format(hash(paths_str))
                 self._all_paths.append(report_h5_name)
 
                 # check if cache is older than reports
@@ -140,8 +145,8 @@ class AppOutput(object):
                     try:
                         if verbose:
                             sys.stdout.write('Generating HDF5 files... ')
-                            self._reports_df.to_hdf(report_h5_name, 'report', format='table')
-                            self._app_reports_df.to_hdf(report_h5_name, 'app_report', format='table', append=True)
+                        self._reports_df.to_hdf(report_h5_name, 'report', format='table')
+                        self._app_reports_df.to_hdf(report_h5_name, 'app_report', format='table', append=True)
                     except ImportError as error:
                         sys.stderr.write('<geopmy> Warning: unable to write HDF5 file: {}\n'.format(str(error)))
 
@@ -152,28 +157,25 @@ class AppOutput(object):
                 self.parse_reports(report_paths, verbose)
 
         if traces:
-            if type(traces) is str:
-                trace_glob = os.path.join(dir_name, traces)
-                trace_paths = natsorted(glob.glob(trace_glob))
-                if len(trace_paths) == 0:
-                    raise RuntimeError('No trace files found with pattern {}.'.format(trace_glob))
-            elif type(traces) is list:
+            if type(traces) is list:
                 trace_paths = [os.path.join(dir_name, path) for path in traces]
             else:
-                raise TypeError('AppOutput: traces must be a list of paths or a glob pattern')
+                trace_glob = os.path.join(dir_name, traces)
+                try:
+                    trace_paths = glob.glob(trace_glob)
+                except TypeError:
+                    raise TypeError('AppOutput: traces must be a list of paths or a glob pattern')
+                trace_paths = natsorted(trace_paths)
+                if len(trace_paths) == 0:
+                    raise RuntimeError('No trace files found with pattern {}.'.format(trace_glob))
 
             self._all_paths.extend(trace_paths)
             self._index_tracker.reset()
 
             if do_cache:
                 # unique cache name based on trace files in this list
-                dirs = set()
-                for rr in trace_paths:
-                    dirs.add(rr)
-                dirs = list(dirs)
-                h5_dir = dirs[0] if len(dirs) == 1 else '.'
                 paths_str = str(trace_paths)
-                trace_h5_name = os.path.join(dir_name, 'trace_{}.h5'.format(hash(paths_str)))
+                trace_h5_name = 'trace_{}.h5'.format(hash(paths_str))
                 self._all_paths.append(trace_h5_name)
 
                 # check if cache is older than traces
@@ -190,7 +192,7 @@ class AppOutput(object):
                 try:
                     self._traces_df = pandas.read_hdf(trace_h5_name, 'trace')
                     if verbose:
-                        sys.stdout.write('Loaded reports from {}.\n'.format(report_h5_name))
+                        sys.stdout.write('Loaded traces from {}.\n'.format(trace_h5_name))
                 except IOError as err:
                     sys.stderr.write('<geopmpy> Warning: trace HDF5 file not detected or older than traces.  Data will be saved to {}.\n'
                                      .format(trace_h5_name))
@@ -222,7 +224,7 @@ class AppOutput(object):
                     if re.findall(r'Host:', line):
                         files += 1
 
-        filesize = '{}KiB'.format(filesize/1024)
+        filesize = '{}KiB'.format(filesize // 1024)
         fileno = 1
         for rp in report_paths:
             # Parse the first report
@@ -266,11 +268,11 @@ class AppOutput(object):
             filesize += os.stat(tp).st_size
         # Abort if traces are too large
         avail_mem = psutil.virtual_memory().available
-        if filesize > avail_mem / 2:
+        if filesize > avail_mem // 2:
             sys.stderr.write('<geopmpy> Warning: Total size of traces is greater than 50% of available memory. Parsing traces will be skipped.\n')
             return
 
-        filesize = '{}MiB'.format(filesize/1024/1024)
+        filesize = '{}MiB'.format(filesize // 1024 // 1024)
 
         for tp in trace_paths:
             if verbose:
@@ -446,7 +448,7 @@ class AppOutput(object):
         for name in names_list:
             # The profile name is currently set to: ${NAME}_${POWER_BUDGET}
             profile_name_map.update({name: int(name.split('_')[-1])})
-        df = self._reports_df.rename(profile_name_map)
+        df = self._reports_df.rename(index=profile_name_map).sort_index(ascending=True)
         if inplace:
             self._reports_df = df
         return df
@@ -594,6 +596,7 @@ class Report(dict):
     _version = None
     _name = None
     _agent = None
+    _start_time = None
 
     @staticmethod
     def reset_vars():
@@ -602,8 +605,8 @@ class Report(dict):
         these fields may change.
 
         """
-        (Report._version, Report._name, Report._agent) = \
-            None, None, None
+        (Report._version, Report._name, Report._agent, Report._start_time) = \
+            None, None, None, None
 
     def __init__(self, report_path, offset=0):
         super(Report, self).__init__()
@@ -635,7 +638,7 @@ class Report(dict):
                     if match is not None:
                         self._version = match.group(1)
                 if self._start_time is None:
-                    match = re.search(r'^Start Time: (\S+)$', line)
+                    match = re.search(r'^Start Time: (.+)$', line)
                     if match is not None:
                         self._start_time = match.group(1)
                 if self._profile_name is None:
@@ -750,6 +753,12 @@ class Report(dict):
             Report._agent = self._agent
         else:
             raise SyntaxError('Unable to parse agent information from report!')
+        if self._start_time is None and Report._start_time:
+            self._start_time = Report._start_time
+        elif self._start_time:
+            Report._start_time = self._start_time
+        else:
+            raise SyntaxError('Unable to parse start time from report!')
 
         # TODO: temporary hack to use old data
         if self._total_energy_dram is None:
@@ -900,10 +909,54 @@ class Trace(object):
     """
     def __init__(self, trace_path, use_agent=True):
         self._path = trace_path
-        self._df = pandas.read_csv(trace_path, sep='|', comment='#', dtype={'region_hash': str, 'region_hint': str})  # region_hash and region_hint must be a string because pandas can't handle 64-bit integers
+
+        old_headers = {'time': 'TIME',
+                       'epoch_count': 'EPOCH_COUNT',
+                       'region_hash': 'REGION_HASH',
+                       'region_hint': 'REGION_HINT',
+                       'region_progress': 'REGION_PROGRESS',
+                       'region_count': 'REGION_COUNT',
+                       'region_runtime': 'REGION_RUNTIME',
+                       'energy_package': 'ENERGY_PACKAGE',
+                       'energy_dram': 'ENERGY_DRAM',
+                       'power_package': 'POWER_PACKAGE',
+                       'power_dram': 'POWER_DRAM',
+                       'frequency': 'FREQUENCY',
+                       'cycles_thread': 'CYCLES_THREAD',
+                       'cycles_reference': 'CYCLES_REFERENCE',
+                       'temperature_core': 'TEMPERATURE_CORE'}
+
+        old_balancer_headers = {'policy_power_cap': 'POLICY_POWER_CAP',
+                                'policy_step_count': 'POLICY_STEP_COUNT',
+                                'policy_max_epoch_runtime': 'POLICY_MAX_EPOCH_RUNTIME',
+                                'policy_power_slack': 'POLICY_POWER_SLACK',
+                                'epoch_runtime': 'EPOCH_RUNTIME',
+                                'power_limit': 'POWER_LIMIT',
+                                'enforced_power_limit': 'ENFORCED_POWER_LIMIT'}
+        old_headers.update(old_balancer_headers)
+
+        old_governor_headers = {'power_budget': 'POWER_BUDGET'}
+        old_headers.update(old_governor_headers)
+
+        column_headers = pandas.read_csv(trace_path, sep='|', comment='#', nrows=0, encoding='utf-8').columns.tolist()
+        original_headers = copy.deepcopy(column_headers)
+
+        column_headers = [old_headers.get(ii, ii) for ii in column_headers]
+
+        if column_headers != original_headers:
+            sys.stderr.write('<geopmpy>: Warning: Old trace file format detected. Old column headers will be forced ' \
+                             'to UPPERCASE.\n')
+
+        # region_hash and region_hint must be a string for pretty printing pandas DataFrames
+        # You can force them to int64 by setting up a converter function then passing the hex string through it
+        # with the read_csv call, but the number will be displayed as an integer from then on.  You'd have to convert
+        # it back to a hex string to compare it with the data in the reports.
+        self._df = pandas.read_csv(trace_path, sep='|', comment='#', header=0, names=column_headers, encoding='utf-8',
+                                   dtype={'REGION_HASH': 'unicode', 'REGION_HINT': 'unicode'})
         self._df.columns = list(map(str.strip, self._df[:0]))  # Strip whitespace from column names
-        self._df['region_hash'] = self._df['region_hash'].astype(str).map(str.strip)  # Strip whitespace from region hashes
-        self._df['region_hint'] = self._df['region_hint'].astype(str).map(str.strip)  # Strip whitespace from region hints
+        self._df['REGION_HASH'] = self._df['REGION_HASH'].astype('unicode').map(str.strip)  # Strip whitespace from region hashes
+        self._df['REGION_HINT'] = self._df['REGION_HINT'].astype('unicode').map(str.strip)  # Strip whitespace from region hints
+
         self._version = None
         self._start_time = None
         self._profile_name = None
@@ -962,10 +1015,14 @@ class Trace(object):
                     out.append(ll[1:])
                 else:
                     done = True
-        out.insert(0, '{')
-        out.append('}')
-        json_str = ''.join(out)
-        dd = json.loads(json_str)
+        try:
+            yaml_fd = io.StringIO(u''.join(out))
+            dd = yaml.load(yaml_fd, Loader=yaml.SafeLoader)
+        except yaml.parser.ParserError:
+            out.insert(0, '{')
+            out.append('}')
+            json_str = ''.join(out)
+            dd = json.loads(json_str)
         try:
             self._version = dd['geopm_version']
             self._start_time = dd['start_time']
@@ -1021,12 +1078,17 @@ class Trace(object):
               'epoch' is false?
 
         """
-        tmp_df = trace_df
+        # drop_duplicates() is a workaround for #662. Duplicate data
+        # rows are showing up in the trace for unmarked.
+        tmp_df = trace_df.drop_duplicates()
 
         filtered_df = tmp_df.filter(regex=column_regex).copy()
-        filtered_df['elapsed_time'] = tmp_df['seconds']
+        filtered_df['elapsed_time'] = tmp_df['time']
+        if epoch:
+            filtered_df['epoch_count'] = tmp_df['epoch_count']
         filtered_df = filtered_df.diff()
         # The following drops all 0's and the negative sample when traversing between 2 trace files.
+        # If the epoch_count column is included, this will also drop rows occuring mid-epoch.
         filtered_df = filtered_df.loc[(filtered_df > 0).all(axis=1)]
 
         # Reset 'index' to be 0 to the length of the unique trace files
@@ -1066,7 +1128,7 @@ class Trace(object):
         idx = pandas.IndexSlice
         et_sums = diffed_trace_df.groupby(level=['iteration'])['elapsed_time'].sum()
         median_index = (et_sums - et_sums.median()).abs().sort_values().index[0]
-        median_df = diffed_trace_df.loc[idx[:, :, :, :, :, :, :, median_index], ]
+        median_df = diffed_trace_df.loc[idx[:, :, :, :, :, median_index], ]
         if config.verbose:
             median_df_index = []
             median_df_index.append(median_df.index.get_level_values('version').unique()[0])
@@ -1168,6 +1230,28 @@ imbalance : {imbalance}
         with open(self._path, 'w') as fid:
             json.dump(obj, fid)
 
+    def get_exec_path(self):
+        # Using libtool causes sporadic issues with the Intel
+        # toolchain.
+        result = 'geopmbench'
+        path = find_executable(result)
+        source_dir = os.path.dirname(
+                     os.path.dirname(
+                     os.path.dirname(
+                     os.path.realpath(__file__))))
+        source_bin = os.path.join(source_dir, '.libs', 'geopmbench')
+        if not path:
+            result = source_bin
+        else:
+            with open(path) as fid:
+                buffer = fid.read(4096)
+                if 'Generated by libtool' in buffer:
+                    result = source_bin
+        return result
+
+    def get_exec_args(self):
+        return [self._path]
+
 
 class AgentConf(object):
     """The GEOPM agent configuration parameters.
@@ -1203,13 +1287,85 @@ class AgentConf(object):
 
     def write(self):
         """Write the current config to a file."""
+        policy_values = [float('nan')] * len(agent.policy_names(self._agent))
+        if self._agent in ['power_governor', 'power_balancer']:
+            policy_values[0] = self._options['power_budget']
+        elif self._agent in ['frequency_map', 'energy_efficient']:
+            policy_values[0] = self._options['frequency_min']
+            policy_values[1] = self._options['frequency_max']
         with open(self._path, "w") as outfile:
-            if self._agent == 'power_governor':
-                    outfile.write("{{\"POWER\" : {}}}\n".format(str(self._options['power_budget'])))
-            elif self._agent == 'power_balancer':
-                    outfile.write("{{\"POWER_CAP\" : {}, \"STEP_COUNT\" : {}, \"MAX_EPOCH_RUNTIME\" : {}"\
-                                  ", \"POWER_SLACK\" : {}}}\n"\
-                                  .format(str(self._options['power_budget']), str(0.0), str(0.0), str(0.0)))
-            elif self._agent in ['energy_efficient', 'frequency_map']:
-                    outfile.write("{{\"FREQ_MIN\" : {}, \"FREQ_MAX\" : {}}}\n"\
-                                  .format(str(self._options['frequency_min']), str(self._options['frequency_max'])))
+            outfile.write(agent.policy_json(self._agent, policy_values))
+
+class RawReport(object):
+    def __init__(self, path):
+        with open(path) as in_fid, tempfile.TemporaryFile(mode='w+t') as out_fid:
+            out_fid.write('GEOPM Meta Data:\n')
+            line = in_fid.readline()
+            version = line.split()[2]
+            out_fid.write('    GEOPM Version: {}\n'.format(version))
+            line = in_fid.readline()
+            col_pos = line.find(': ')
+            out_fid.write("    {}: '{}'\n".format(line[:col_pos], line[col_pos+2:-1]))
+            for idx in range(2):
+                line = in_fid.readline()
+                out_fid.write('    {}'.format(line))
+            for line in in_fid.readlines():
+                if len(line) > 1:
+                    if line.startswith('Host:'):
+                        host = line.split(':')[1].strip()
+                        out_fid.write('{}:\n'.format(host))
+                    else:
+                        out_fid.write('    {}'.format(line))
+            out_fid.seek(0)
+            self._raw_dict = yaml.load(out_fid, Loader=yaml.SafeLoader)
+
+    def raw_report(self):
+        return copy.deepcopy(self._raw_dict)
+
+    def dump_json(self, path):
+        jdata = json.dumps(self._raw_dict)
+        with open(path, 'w') as fid:
+            fid.write(jdata)
+
+    def meta_data(self):
+        return copy.deepcopy(self._raw_dict['GEOPM Meta Data'])
+
+    def host_names(self):
+        return [xx for xx in self._raw_dict.keys() if xx != 'GEOPM Meta Data']
+
+    def region_names(self, host_name):
+        host_data = self._raw_dict[host_name]
+        result = [xx.split()[1] for xx in host_data.keys() if xx.startswith('Region ')]
+        return result
+
+    def region_hash(self, region_name):
+        for host_name in self.host_names():
+            host_data = self._raw_dict[host_name]
+            for xx in host_data.keys():
+                if xx.startswith('Region {}'.format(region_name)):
+                    return xx.split()[2][1:-1]
+        raise KeyError('Region not found: {}'.format(region_name))
+
+    def raw_region(self, host_name, region_name):
+        host_data = self._raw_dict[host_name]
+        region_hash = self.region_hash(region_name)
+        key = 'Region {} ({})'.format(region_name, region_hash)
+        return copy.deepcopy(host_data[key])
+
+    def raw_epoch(self, host_name):
+        host_data = self._raw_dict[host_name]
+        key = 'Epoch Totals'
+        return copy.deepcopy(host_data[key])
+
+    def raw_totals(self, host_name):
+        host_data = self._raw_dict[host_name]
+        key = 'Application Totals'
+        return copy.deepcopy(host_data[key])
+
+    def get_field(self, raw_data, key, units=''):
+        matches = [(len(kk), kk) for kk in raw_data.keys() if key in kk and units in kk]
+        if len(matches) == 0:
+            raise KeyError('Field not found: {}'.format(key))
+        match = sorted(matches)[0][1]
+        return copy.deepcopy(raw_data[match])
+

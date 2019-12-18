@@ -39,7 +39,6 @@
 #include <memory>
 #include <functional>
 
-#include "geopm.h"
 #include "geopm_time.h"
 
 #include "Agent.hpp"
@@ -55,7 +54,7 @@ namespace geopm
         public:
             FrequencyMapAgent();
             FrequencyMapAgent(PlatformIO &plat_io, const PlatformTopo &topo,
-                              std::shared_ptr<FrequencyGovernor> gov);
+                              std::shared_ptr<FrequencyGovernor> gov, std::map<uint64_t, double> frequency_map);
             virtual ~FrequencyMapAgent() = default;
             void init(int level, const std::vector<int> &fan_in, bool is_level_root) override;
             void validate_policy(std::vector<double> &policy) const override;
@@ -73,7 +72,9 @@ namespace geopm
             std::vector<std::pair<std::string, std::string> > report_host(void) const override;
             std::map<uint64_t, std::vector<std::pair<std::string, std::string> > > report_region(void) const override;
             std::vector<std::string> trace_names(void) const override;
+            std::vector<std::function<std::string(double)> > trace_formats(void) const override;
             void trace_values(std::vector<double> &values) override;
+            void enforce_policy(const std::vector<double> &policy) const override;
 
             static std::string plugin_name(void);
             static std::unique_ptr<Agent> make_plugin(void);
@@ -82,7 +83,6 @@ namespace geopm
         private:
             void update_policy(const std::vector<double> &policy);
             void init_platform_io(void);
-            void parse_env_map(void);
 
             enum m_policy_e {
                 M_POLICY_FREQ_MIN,
@@ -96,11 +96,18 @@ namespace geopm
                 M_NUM_SIGNAL,
             };
 
+            struct m_region_info_s {
+                uint64_t hash;
+                uint64_t hint;
+                double runtime;
+                uint64_t count;
+            };
+
             const int M_PRECISION;
             PlatformIO &m_platform_io;
             const PlatformTopo &m_platform_topo;
             std::shared_ptr<FrequencyGovernor> m_freq_governor;
-            std::vector<struct geopm_region_info_s>  m_last_region;
+            std::vector<struct m_region_info_s>  m_last_region;
             std::map<uint64_t, double> m_hash_freq_map;
             geopm_time_s m_last_wait;
             std::vector<std::vector<int> > m_signal_idx;

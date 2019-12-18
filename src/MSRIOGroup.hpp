@@ -56,9 +56,11 @@ namespace geopm
                 M_CPUID_SNB = 0x62D,
                 M_CPUID_IVT = 0x63E,
                 M_CPUID_HSX = 0x63F,
+                M_CPUID_HSX2 = 0x63C,
                 M_CPUID_BDX = 0x64F,
                 M_CPUID_KNL = 0x657,
                 M_CPUID_SKX = 0x655,
+                M_CPUID_SKX2 = 0x65E,
             };
 
             MSRIOGroup();
@@ -91,6 +93,7 @@ namespace geopm
             void save_control(void) override;
             void restore_control(void) override;
             std::function<double(const std::vector<double> &)> agg_function(const std::string &signal_name) const override;
+            std::function<std::string(double)> format_function(const std::string &signal_name) const override;
             std::string signal_description(const std::string &signal_name) const override;
             std::string control_description(const std::string &control_name) const override;
             /// @brief Fill string with the msr-safe whitelist file contents
@@ -168,6 +171,7 @@ namespace geopm
             std::map<std::string, std::function<double(const std::vector<double> &)> > m_func_map;
             std::map<std::string, std::string> m_signal_desc_map;
             std::map<std::string, std::string> m_control_desc_map;
+            std::map<std::string, int> m_signal_units_map;
     };
 }
 

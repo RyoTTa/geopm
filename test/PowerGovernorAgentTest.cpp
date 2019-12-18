@@ -51,12 +51,13 @@ using ::testing::DoAll;
 using ::testing::SaveArg;
 using ::testing::SetArgReferee;
 
+bool is_format_double(std::function<std::string(double)> func);
+
 class PowerGovernorAgentTest : public ::testing::Test
 {
     protected:
         enum {
             M_SIGNAL_POWER_PACKAGE,
-            M_SIGNAL_POWER_DRAM,
         };
         void SetUp(void);
         void set_up_leaf(void);
@@ -86,7 +87,8 @@ void PowerGovernorAgentTest::SetUp(void)
         .Times(AtLeast(1))
         .WillRepeatedly(Return(GEOPM_DOMAIN_PACKAGE));
     EXPECT_CALL(m_platform_topo, num_domain(GEOPM_DOMAIN_PACKAGE))
-        .WillOnce(Return(m_num_package));
+        .Times(AtLeast(1))
+        .WillRepeatedly(Return(m_num_package));
     // Warning: if ENERGY_PACKAGE does not return updated values,
     // PowerGovernorAgent::wait() will loop forever.
     m_energy_package = 555.5;
@@ -110,8 +112,6 @@ void PowerGovernorAgentTest::set_up_leaf(void)
 {
     EXPECT_CALL(m_platform_io, push_signal("POWER_PACKAGE", GEOPM_DOMAIN_BOARD, 0))
         .WillOnce(Return(M_SIGNAL_POWER_PACKAGE));
-    EXPECT_CALL(m_platform_io, push_signal("POWER_DRAM", GEOPM_DOMAIN_BOARD, 0))
-        .WillOnce(Return(M_SIGNAL_POWER_DRAM));
     EXPECT_CALL(*m_power_gov, init_platform_io());
     EXPECT_CALL(*m_power_gov, sample_platform())
         .Times(AtLeast(0));
@@ -163,8 +163,6 @@ TEST_F(PowerGovernorAgentTest, sample_platform)
 
     EXPECT_CALL(m_platform_io, sample(M_SIGNAL_POWER_PACKAGE)).Times(m_min_num_converged + 1)
         .WillRepeatedly(Return(50.5));
-    EXPECT_CALL(m_platform_io, sample(M_SIGNAL_POWER_DRAM)).Times(m_min_num_converged + 1)
-        .WillRepeatedly(Return(30.2));
     std::vector<double> out_sample {NAN, NAN, NAN};
     std::vector<double> expected {NAN, NAN, NAN};
 
@@ -173,7 +171,7 @@ TEST_F(PowerGovernorAgentTest, sample_platform)
         check_result(expected, out_sample);
     }
 
-    expected = {80.7, true, 0.0};
+    expected = {50.5, true, 0.0};
     m_agent->sample_platform(out_sample);
     check_result(expected, out_sample);
 }
@@ -184,14 +182,10 @@ TEST_F(PowerGovernorAgentTest, adjust_platform)
     m_agent->init(0, m_fan_in, false);
 
     double power_budget = 123;
-    double dram_power = 14;
     std::vector<double> policy = {power_budget};
 
-    // sample once to get dram power
     EXPECT_CALL(m_platform_io, sample(M_SIGNAL_POWER_PACKAGE)).Times(1)
         .WillRepeatedly(Return(5.5));
-    EXPECT_CALL(m_platform_io, sample(M_SIGNAL_POWER_DRAM)).Times(1)
-        .WillRepeatedly(Return(dram_power));
     std::vector<double> out_sample {NAN, NAN, NAN};
     m_agent->sample_platform(out_sample);
 
@@ -276,4 +270,27 @@ TEST_F(PowerGovernorAgentTest, split_policy)
     for (int child = 0; child < m_fan_in[1]; ++child) {
         check_result(expected[child], policy_out[child]);
     }
+}
+
+TEST_F(PowerGovernorAgentTest, enforce_policy)
+{
+    const double limit = 100;
+    const std::vector<double> policy{limit};
+    const std::vector<double> bad_policy{100, 200, 300};
+
+    EXPECT_CALL(m_platform_io, write_control("POWER_PACKAGE_LIMIT", GEOPM_DOMAIN_BOARD,
+                                             0, limit/m_num_package));
+
+    m_agent = geopm::make_unique<PowerGovernorAgent>(m_platform_io, m_platform_topo, nullptr);
+    m_agent->enforce_policy(policy);
+
+    EXPECT_THROW(m_agent->enforce_policy(bad_policy), geopm::Exception);
+}
+
+TEST_F(PowerGovernorAgentTest, trace)
+{
+    m_agent = geopm::make_unique<PowerGovernorAgent>(m_platform_io, m_platform_topo, nullptr);
+    std::vector<std::string> expect_names{"POWER_BUDGET"};
+    EXPECT_EQ(expect_names, m_agent->trace_names());
+    EXPECT_TRUE(is_format_double(m_agent->trace_formats().at(0)));
 }

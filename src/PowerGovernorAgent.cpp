@@ -116,7 +116,6 @@ namespace geopm
         m_power_gov->init_platform_io();
         // Setup signals
         m_pio_idx[M_PLAT_SIGNAL_PKG_POWER] = m_platform_io.push_signal("POWER_PACKAGE", GEOPM_DOMAIN_BOARD, 0);
-        m_pio_idx[M_PLAT_SIGNAL_DRAM_POWER] = m_platform_io.push_signal("POWER_DRAM", GEOPM_DOMAIN_BOARD, 0);
 
         // Setup controls
         int pkg_pwr_domain_type = m_platform_io.control_domain_type("POWER_PACKAGE_LIMIT");
@@ -158,7 +157,7 @@ namespace geopm
 
         if (per_package_budget_in > m_max_power_setting ||
             per_package_budget_in < m_min_power_setting) {
-            throw Exception("PowerGovernorAgent::descend(): "
+            throw Exception("PowerGovernorAgent::split_policy(): "
                             "invalid power budget.",
                             GEOPM_ERROR_INVALID, __FILE__, __LINE__);
         }
@@ -272,8 +271,8 @@ namespace geopm
         }
 
         /// @todo should use EPOCH_ENERGY signal which doesn't currently exist
-        if (!std::isnan(m_sample[M_PLAT_SIGNAL_PKG_POWER]) && !std::isnan(m_sample[M_PLAT_SIGNAL_DRAM_POWER])) {
-            m_epoch_power_buf->insert(m_sample[M_PLAT_SIGNAL_PKG_POWER] + m_sample[M_PLAT_SIGNAL_DRAM_POWER]);
+        if (!std::isnan(m_sample[M_PLAT_SIGNAL_PKG_POWER])) {
+            m_epoch_power_buf->insert(m_sample[M_PLAT_SIGNAL_PKG_POWER]);
         }
         // If we have observed more than m_min_num_converged epoch
         // calls then send median filtered power values up the tree.
@@ -314,7 +313,12 @@ namespace geopm
 
     std::vector<std::string> PowerGovernorAgent::trace_names(void) const
     {
-        return {"power_budget"};
+        return {"POWER_BUDGET"};
+    }
+
+    std::vector<std::function<std::string(double)> > PowerGovernorAgent::trace_formats(void) const
+    {
+        return {string_format_double};
     }
 
     void PowerGovernorAgent::trace_values(std::vector<double> &values)
@@ -326,6 +330,17 @@ namespace geopm
         }
 #endif
         values[M_TRACE_SAMPLE_PWR_BUDGET] = m_last_power_budget;
+    }
+
+    void PowerGovernorAgent::enforce_policy(const std::vector<double> &policy) const
+    {
+        if (policy.size() != M_NUM_POLICY) {
+            throw Exception("PowerGovernorAgent::enforce_policy(): policy vector incorrectly sized.",
+                            GEOPM_ERROR_INVALID, __FILE__, __LINE__);
+        }
+        int control_domain = m_platform_io.control_domain_type("POWER_PACKAGE_LIMIT");
+        double pkg_policy = policy[M_POLICY_POWER] / m_platform_topo.num_domain(control_domain);
+        m_platform_io.write_control("POWER_PACKAGE_LIMIT", GEOPM_DOMAIN_BOARD, 0, pkg_policy);
     }
 
     std::string PowerGovernorAgent::plugin_name(void)

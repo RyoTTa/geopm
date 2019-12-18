@@ -47,9 +47,7 @@ namespace geopm
     }
 
     MonitorAgent::MonitorAgent(PlatformIO &plat_io, const PlatformTopo &topo)
-        : m_platform_io(plat_io)
-        , m_platform_topo(topo)
-        , m_last_wait(GEOPM_TIME_REF)
+        : m_last_wait(GEOPM_TIME_REF)
         , M_WAIT_SEC(0.005)
     {
         geopm_time(&m_last_wait);
@@ -150,7 +148,17 @@ namespace geopm
         return {};
     }
 
+    std::vector<std::function<std::string(double)> > MonitorAgent::trace_formats(void) const
+    {
+        return {};
+    }
+
     void MonitorAgent::trace_values(std::vector<double> &values)
+    {
+
+    }
+
+    void MonitorAgent::enforce_policy(const std::vector<double> &policy) const
     {
 
     }

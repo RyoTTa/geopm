@@ -56,6 +56,13 @@ geopm_agent_c(3) -- query information about available agents
     `size_t` _json_string_max_, <br>
     `const char *`_json_string_`);`
 
+  * `int geopm_agent_policy_json_partial(`:
+    `const char *`_agent_name_, <br>
+    `size_t` _policy_array_size_, <br>
+    `const double *`_policy_array_, <br>
+    `size_t` _json_string_max_, <br>
+    `const char *`_json_string_`);`
+
   * `int geopm_agent_num_sample(`:
     `const char *`_agent_name_, <br>
     `int *`_num_sample_`);`
@@ -73,6 +80,9 @@ geopm_agent_c(3) -- query information about available agents
     `int` _agent_idx_, <br>
     `size_t` _agent_name_max_, <br>
     `char *`_agent_name_`);`
+
+  * `int geopm_agent_enforce_policy(`:
+    `void);`
 
 ## DESCRIPTION
 The _geopm_agent_c_ interface is used to query GEOPM about agents on a
@@ -109,6 +119,16 @@ zero upon success; see [ERRORS][] section below for details.
     stored in the _json_string_ buffer.  The number of bytes reserved for the
     buffer is specified in _json_string_max_.
 
+  * `geopm_agent_policy_json_partial`():
+    creates a JSON file based on the provided _policy_array_ of length
+    _policy_array_size_ that can be used for statically controlling
+    the job policy for _agent_name_.  The output is stored in the
+    _json_string_ buffer.  The number of bytes reserved for the buffer
+    is specified in _json_string_max_.  The _policy_array_ may contain
+    only a partial list of the policies accepted by the Agent.  Missing
+    policy values will be automatically interpreted as NAN, indicating
+    that the Agent should use a default value.
+
   * `geopm_agent_num_sample`():
     queries GEOPM for the number of sample parameters provided by _agent_name_.
     The result is stored in _num_sample_.  Returns zero on success, otherwise
@@ -133,6 +153,20 @@ zero upon success; see [ERRORS][] section below for details.
     output string is specified in _agent_name_max_.  Returns zero if the
     _agent_idx_ is in range, and the agent name can be stored in the output
     string (_agent_name_).  Otherwise an error code is returned.
+
+  * `geopm_agent_enforce_policy`():
+    queries the environment for the `GEOPM_AGENT` and `GEOPM_POLICY`
+    and enforces the policy for the agent by writing controls to the
+    platform (see **geopm_pio_c(3)**).  A resource manager can use
+    this function to enforce the GEOPM configured policy (see
+    **geopm(7)**) prior to releasing compute nodes for a user
+    allocation.  More generally this function allows one-time use of
+    an Agent outside of the context of an MPI runtime or the use of a
+    GEOPM Controller.  Note that the enforcement of the policy will
+    not support any of the dynamic features of the agent.  For instance,
+    calling `geopm_agent_enforce_policy`() for the power_balancer will
+    set all nodes to the same power limit, and those limits will not
+    vary with time.
 
 ## ERRORS
 All functions described on this man page return an error code.  See

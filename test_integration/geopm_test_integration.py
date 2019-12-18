@@ -31,6 +31,12 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+from __future__ import absolute_import
+
+from __future__ import division
+from future import standard_library
+standard_library.install_aliases()
+from builtins import str
 import os
 import sys
 import unittest
@@ -40,115 +46,13 @@ import pandas
 import collections
 import socket
 import shlex
-import StringIO
 import json
 
-import geopm_test_launcher
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from test_integration import util
+from test_integration import geopm_test_launcher
 import geopmpy.io
 import geopmpy.launcher
-
-
-def skip_unless_run_long_tests():
-    if 'GEOPM_RUN_LONG_TESTS' not in os.environ:
-        return unittest.skip("Define GEOPM_RUN_LONG_TESTS in your environment to run this test.")
-    return lambda func: func
-
-
-def allocation_node_test(test_exec, stdout, stderr):
-    argv = shlex.split(test_exec)
-    argv.insert(1, geopm_test_launcher.detect_launcher())
-    argv.insert(2, '--geopm-ctl-disable')
-    launcher = geopmpy.launcher.Factory().create(argv, num_rank=1, num_node=1, job_name="geopm_allocation_test")
-    launcher.run(stdout, stderr)
-
-def skip_unless_cpufreq():
-    try:
-        test_exec = "dummy -- stat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq \
-                     && stat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq"
-        dev_null = open('/dev/null', 'w')
-        allocation_node_test(test_exec, dev_null, dev_null)
-        dev_null.close()
-    except subprocess.CalledProcessError:
-        return unittest.skip("Could not determine min and max frequency, enable cpufreq driver to run this test.")
-    return lambda func: func
-
-def do_geopmwrite(write_str):
-    test_exec = "dummy -- geopmwrite " + write_str
-    stdout = StringIO.StringIO()
-    stderr = StringIO.StringIO()
-    try:
-        allocation_node_test(test_exec, stdout, stderr)
-    except subprocess.CalledProcessError as err:
-        sys.stderr.write(stderr.getvalue())
-        raise err
-
-
-def do_geopmread(read_str):
-    test_exec = "dummy -- geopmread " + read_str
-    stdout = StringIO.StringIO()
-    stderr = StringIO.StringIO()
-    try:
-        allocation_node_test(test_exec, stdout, stderr)
-    except subprocess.CalledProcessError as err:
-        sys.stderr.write(stderr.getvalue())
-        raise err
-    return float(stdout.getvalue().splitlines()[-1])
-
-def get_platform():
-    test_exec = "dummy -- cat /proc/cpuinfo"
-    ostream = StringIO.StringIO()
-    dev_null = open('/dev/null', 'w')
-    allocation_node_test(test_exec, ostream, dev_null)
-    dev_null.close()
-    output = ostream.getvalue()
-
-    for line in output.splitlines():
-        if line.startswith('cpu family\t:'):
-            fam = int(line.split(':')[1])
-        if line.startswith('model\t\t:'):
-            mod = int(line.split(':')[1])
-    return fam, mod
-
-
-def skip_unless_platform_bdx():
-    fam, mod = get_platform()
-    if fam != 6 or mod not in (45, 47, 79):
-        return unittest.skip("Performance test is tuned for BDX server, The family {}, model {} is not supported.".format(fam, mod))
-    return lambda func: func
-
-
-def skip_unless_config_enable(feature):
-    path = os.path.join(
-           os.path.dirname(
-            os.path.dirname(
-             os.path.realpath(__file__))),
-           'config.log')
-    with open(path) as fid:
-        for line in fid.readlines():
-            if line.startswith("enable_{}='0'".format(feature)):
-                return unittest.skip("Feature: {feature} is not enabled, configure with --enable-{feature} to run this test.".format(feature=feature))
-            elif line.startswith("enable_{}='1'".format(feature)):
-                break
-    return lambda func: func
-
-
-def skip_unless_optimized():
-    path = os.path.join(
-           os.path.dirname(
-            os.path.dirname(
-             os.path.realpath(__file__))),
-           'config.log')
-    with open(path) as fid:
-        for line in fid.readlines():
-            if line.startswith("enable_debug='1'"):
-                return unittest.skip("This performance test cannot be run when GEOPM is configured with --enable-debug")
-    return lambda func: func
-
-
-def skip_unless_slurm_batch():
-    if 'SLURM_NODELIST' not in os.environ:
-        return unittest.skip('Requires SLURM batch session.')
-    return lambda func: func
 
 
 class TestIntegration(unittest.TestCase):
@@ -158,12 +62,12 @@ class TestIntegration(unittest.TestCase):
         self._options = {'power_budget': 150}
         self._tmp_files = []
         self._output = None
-        self._power_limit = do_geopmread("MSR::PKG_POWER_LIMIT:PL1_POWER_LIMIT board 0")
-        self._frequency = do_geopmread("MSR::PERF_CTL:FREQ board 0")
+        self._power_limit = geopm_test_launcher.geopmread("MSR::PKG_POWER_LIMIT:PL1_POWER_LIMIT board 0")
+        self._frequency = geopm_test_launcher.geopmread("MSR::PERF_CTL:FREQ board 0")
 
     def tearDown(self):
-        do_geopmwrite("MSR::PKG_POWER_LIMIT:PL1_POWER_LIMIT board 0 " + str(self._power_limit))
-        do_geopmwrite("MSR::PERF_CTL:FREQ board 0 " + str(self._frequency))
+        geopm_test_launcher.geopmwrite("MSR::PKG_POWER_LIMIT:PL1_POWER_LIMIT board 0 " + str(self._power_limit))
+        geopm_test_launcher.geopmwrite("MSR::PERF_CTL:FREQ board 0 " + str(self._frequency))
         if sys.exc_info() == (None, None, None) and os.getenv('GEOPM_KEEP_FILES') is None:
             if self._output is not None:
                 self._output.remove_files()
@@ -184,12 +88,12 @@ class TestIntegration(unittest.TestCase):
         last_index = 0
         filtered_df = pandas.DataFrame()
         row_list = []
-        progress_1s = df['region_progress'].loc[df['region_progress'] == 1]
+        progress_1s = df['REGION_PROGRESS'].loc[df['REGION_PROGRESS'] == 1]
         for index, _ in progress_1s.iteritems():
             row = df.loc[last_index:index].head(1)
-            row_list += [row[['time', 'region_progress', 'region_runtime']]]
+            row_list += [row[['TIME', 'REGION_PROGRESS', 'REGION_RUNTIME']]]
             row = df.loc[last_index:index].tail(1)
-            row_list += [row[['time', 'region_progress', 'region_runtime']]]
+            row_list += [row[['TIME', 'REGION_PROGRESS', 'REGION_RUNTIME']]]
             last_index = index + 1  # Set the next starting index to be one past where we are
         filtered_df = pandas.concat(row_list)
         return filtered_df
@@ -262,7 +166,7 @@ class TestIntegration(unittest.TestCase):
 
     @unittest.skipUnless(geopm_test_launcher.detect_launcher() != "aprun",
                          'ALPS does not support multi-application launch on the same nodes.')
-    @skip_unless_slurm_batch()
+    @util.skip_unless_slurm_batch()
     def test_report_and_trace_generation_application(self):
         name = 'test_report_and_trace_generation_application'
         report_path = name + '.report'
@@ -384,6 +288,69 @@ class TestIntegration(unittest.TestCase):
             total_runtime = sleep_data['runtime'].item() + spin_data['runtime'].item()
             self.assertNear(total_runtime, epoch_data['runtime'].item())
 
+    def test_epoch_data_valid(self):
+        name = 'test_epoch_data_valid'
+        report_path = name + '.report'
+        num_node = 1
+        num_rank = 1
+        big_o = 1.0
+        loop_count = 10
+        app_conf = geopmpy.io.BenchConf(name + '_app.config')
+        self._tmp_files.append(app_conf.get_path())
+        app_conf.set_loop_count(loop_count)
+        app_conf.append_region('spin-unmarked', big_o)
+        agent_conf = geopmpy.io.AgentConf(name + '_agent.config', self._agent, self._options)
+        self._tmp_files.append(agent_conf.get_path())
+        launcher = geopm_test_launcher.TestLauncher(app_conf, agent_conf, report_path)
+        launcher.set_num_node(num_node)
+        launcher.set_num_rank(num_rank)
+        launcher.run(name)
+
+        report = geopmpy.io.RawReport(report_path)
+        node_names = report.host_names()
+        self.assertEqual(num_node, len(node_names))
+        for nn in node_names:
+            regions = report.region_names(nn)
+            self.assertTrue('model-init' not in regions)
+            totals = report.raw_totals(nn)
+            unmarked = report.raw_region(nn, 'unmarked-region')
+            epoch = report.raw_epoch(nn)
+
+            # Epoch has valid data
+            self.assertGreater(epoch['runtime (sec)'], 0)
+            self.assertGreater(epoch['sync-runtime (sec)'], 0)
+            self.assertGreater(epoch['package-energy (joules)'], 0)
+            self.assertGreater(epoch['dram-energy (joules)'], 0)
+            self.assertGreater(epoch['power (watts)'], 0)
+            self.assertGreater(epoch['frequency (%)'], 0)
+            self.assertGreater(epoch['frequency (Hz)'], 0)
+            self.assertEqual(epoch['count'], loop_count)
+
+            # Runtime
+            self.assertTrue(totals['runtime (sec)'] > unmarked['runtime (sec)'] >= epoch['runtime (sec)'],
+                            '''The total runtime is NOT > the unmarked runtime or the unmarked runtime is NOT
+                               >= the Epoch runtime.''')
+
+            # Package Energy (joules)
+            self.assertTrue(totals['package-energy (joules)'] >
+                            unmarked['package-energy (joules)'] >=
+                            epoch['package-energy (joules)'],
+                            '''The total package energy (joules) is NOT > the unmarked package energy (joules)
+                               or the unmarked package energy (joules) is NOT >= the Epoch package
+                               energy (joules).''')
+
+            # DRAM Energy
+            self.assertTrue(totals['dram-energy (joules)'] >
+                            unmarked['dram-energy (joules)'] >=
+                            epoch['dram-energy (joules)'],
+                            '''The total dram energy is NOT > the unmarked dram energy or the unmarked
+                               dram energy is NOT >= the Epoch dram energy.''')
+
+            # Sync-runtime
+            self.assertTrue(unmarked['sync-runtime (sec)'] >= epoch['sync-runtime (sec)'],
+                            '''The sync-runtime for the unmarked region is NOT >= the Epoch sync-runtime.''')
+
+
     def test_runtime_nested(self):
         name = 'test_runtime_nested'
         report_path = name + '.report'
@@ -441,11 +408,11 @@ class TestIntegration(unittest.TestCase):
         for nn in node_names:
             trace = self._output.get_trace_data(node_name=nn)
             app_totals = self._output.get_app_total_data(node_name=nn)
-            self.assertNear(trace.iloc[-1]['time'], app_totals['runtime'].item(), 'Application runtime failure, node_name={}.'.format(nn))
+            self.assertNear(trace.iloc[-1]['TIME'], app_totals['runtime'].item(), msg='Application runtime failure, node_name={}.'.format(nn))
             # Calculate runtime totals for each region in each trace, compare to report
             tt = trace.reset_index(level='index')  # move 'index' field from multiindex to columns
-            tt = tt.set_index(['region_hash'], append=True)  # add region_hash column to multiindex
-            tt_reg = tt.groupby(level=['region_hash'])
+            tt = tt.set_index(['REGION_HASH'], append=True)  # add region_hash column to multiindex
+            tt_reg = tt.groupby(level=['REGION_HASH'])
             for region_name in regions:
                 region_data = self._output.get_report_data(node_name=nn, region=region_name)
                 if (region_name not in ['unmarked-region', 'model-init', 'epoch'] and
@@ -455,15 +422,15 @@ class TestIntegration(unittest.TestCase):
                     trace_data = tt_reg.get_group(region_hash)
                     start_idx = trace_data.iloc[0]['index']
                     end_idx = trace_data.iloc[-1]['index'] + 1  # use time from sample after exiting region
-                    start_time = tt.loc[tt['index'] == start_idx]['time'].item()
-                    end_time = tt.loc[tt['index'] == end_idx]['time'].item()
+                    start_time = tt.loc[tt['index'] == start_idx]['TIME'].item()
+                    end_time = tt.loc[tt['index'] == end_idx]['TIME'].item()
                     trace_elapsed_time = end_time - start_time
-                    trace_elapsed_time = trace_data.iloc[-1]['time'] - trace_data.iloc[0]['time']
+                    trace_elapsed_time = trace_data.iloc[-1]['TIME'] - trace_data.iloc[0]['TIME']
                     msg = 'for region {rn} on node {nn}'.format(rn=region_name, nn=nn)
                     self.assertNear(trace_elapsed_time, region_data['sync_runtime'].item(), msg=msg)
             #epoch
             region_data = self._output.get_report_data(node_name=nn, region='epoch')
-            trace_elapsed_time = trace.iloc[-1]['time'] - trace['time'].loc[trace['epoch_count'] == 0].iloc[0]
+            trace_elapsed_time = trace.iloc[-1]['TIME'] - trace['TIME'].loc[trace['EPOCH_COUNT'] == 0].iloc[0]
             msg = 'for epoch on node {nn}'.format(nn=nn)
             self.assertNear(trace_elapsed_time, region_data['runtime'].item(), msg=msg)
 
@@ -496,9 +463,9 @@ class TestIntegration(unittest.TestCase):
         for nn in node_names:
             app_totals = self._output.get_app_total_data(node_name=nn)
             trace = self._output.get_trace_data(node_name=nn)
-            self.assertNear(trace.iloc[-1]['time'], app_totals['runtime'].item())
-            tt = trace.set_index(['region_hash'], append=True)
-            tt = tt.groupby(level=['region_hash'])
+            self.assertNear(trace.iloc[-1]['TIME'], app_totals['runtime'].item())
+            tt = trace.set_index(['REGION_HASH'], append=True)
+            tt = tt.groupby(level=['REGION_HASH'])
             for region_name in regions:
                 region_data = self._output.get_report_data(node_name=nn, region=region_name)
                 if region_name not in ['unmarked-region', 'model-init', 'epoch'] and not region_name.startswith('MPI_') and region_data['runtime'].item() != 0:
@@ -507,13 +474,13 @@ class TestIntegration(unittest.TestCase):
                     first_time = False
                     epsilon = 0.001 if region_name != 'sleep' else 0.05
                     for index, df in filtered_df.iterrows():
-                        if df['region_progress'] == 1:
-                            self.assertNear(df['region_runtime'], expected_region_runtime[region_name], epsilon=epsilon)
+                        if df['REGION_PROGRESS'] == 1:
+                            self.assertNear(df['REGION_RUNTIME'], expected_region_runtime[region_name], epsilon=epsilon)
                             first_time = True
-                        if first_time is True and df['region_progress'] == 0:
-                            self.assertNear(df['region_runtime'], expected_region_runtime[region_name], epsilon=epsilon)
+                        if first_time is True and df['REGION_PROGRESS'] == 0:
+                            self.assertNear(df['REGION_RUNTIME'], expected_region_runtime[region_name], epsilon=epsilon)
 
-    @skip_unless_run_long_tests()
+    @util.skip_unless_run_long_tests()
     def test_region_runtimes(self):
         name = 'test_region_runtimes'
         report_path = name + '.report'
@@ -539,19 +506,19 @@ class TestIntegration(unittest.TestCase):
         # Calculate region times from traces
         region_times = collections.defaultdict(lambda: collections.defaultdict(dict))
         for nn in node_names:
-            tt = self._output.get_trace_data(node_name=nn).set_index(['region_hash'], append=True).groupby(level=['region_hash'])
+            tt = self._output.get_trace_data(node_name=nn).set_index(['REGION_HASH'], append=True).groupby(level=['REGION_HASH'])
 
             for region_hash, data in tt:
                 filtered_df = self.create_progress_df(data)
                 filtered_df = filtered_df.diff()
                 # Since I'm not separating out the progress 0's from 1's, when I do the diff I only care about the
                 # case where 1 - 0 = 1 for the progress column.
-                filtered_df = filtered_df.loc[filtered_df['region_progress'] == 1]
+                filtered_df = filtered_df.loc[filtered_df['REGION_PROGRESS'] == 1]
 
                 if len(filtered_df) > 1:
                     launcher.write_log(name, 'Region elapsed time stats from {} - {} :\n{}'\
-                                       .format(nn, region_hash, filtered_df['time'].describe()))
-                    filtered_df['time'].describe()
+                                       .format(nn, region_hash, filtered_df['TIME'].describe()))
+                    filtered_df['TIME'].describe()
                     region_times[nn][region_hash] = filtered_df
 
             launcher.write_log(name, '{}'.format('-' * 80))
@@ -569,7 +536,7 @@ class TestIntegration(unittest.TestCase):
                         launcher.write_log(name, 'Region {} is {}.'.format(rr['id'].item(), region_name))
                     runtime = rr['sync_runtime'].item()
                     self.assertNear(runtime,
-                                    region_times[nn][rr['id'].item()]['time'].sum())
+                                    region_times[nn][rr['id'].item()]['TIME'].sum())
             write_regions = False
 
         # Test to ensure every region detected in the trace is captured in the report.
@@ -634,9 +601,9 @@ class TestIntegration(unittest.TestCase):
             self.assertNear(delay * loop_count, spin_data['runtime'].item())
             self.assertEqual(loop_count, spin_data['count'].item())
             self.assertEqual(loop_count, epoch_data['count'].item())
-            self.assertEqual(loop_count, trace_data['epoch_count'][-1])
+            self.assertEqual(loop_count, trace_data['EPOCH_COUNT'][-1])
 
-    @skip_unless_run_long_tests()
+    @util.skip_unless_run_long_tests()
     def test_scaling(self):
         """
         This test will start at ${num_node} nodes and ranks.  It will then calls check_run() to
@@ -689,7 +656,7 @@ class TestIntegration(unittest.TestCase):
                 num_node *= 2
                 self._output.remove_files()
 
-    @skip_unless_run_long_tests()
+    @util.skip_unless_run_long_tests()
     def test_power_consumption(self):
         name = 'test_power_consumption'
         report_path = name + '.report'
@@ -702,13 +669,10 @@ class TestIntegration(unittest.TestCase):
         app_conf.append_region('dgemm', 8.0)
         app_conf.set_loop_count(loop_count)
 
-        fam, mod = get_platform()
-        if fam == 6 and mod in (45, 47, 79):
-            # set budget for BDX server
-            self._options['power_budget'] = 300
-        elif fam == 6 and mod == 87:
+        fam, mod = geopm_test_launcher.get_platform()
+        if fam == 6 and mod == 87:
             # budget for KNL
-            self._options['power_budget'] = 200
+            self._options['power_budget'] = 130
         else:
             self._options['power_budget'] = 200
         gov_agent_conf_path = name + '_gov_agent.config'
@@ -729,20 +693,20 @@ class TestIntegration(unittest.TestCase):
         for nn in node_names:
             tt = self._output.get_trace_data(node_name=nn)
 
-            first_epoch_index = tt.loc[tt['epoch_count'] == 0][:1].index[0]
+            first_epoch_index = tt.loc[tt['EPOCH_COUNT'] == 0][:1].index[0]
             epoch_dropped_data = tt[first_epoch_index:]  # Drop all startup data
 
-            power_data = epoch_dropped_data.filter(regex='energy')
-            power_data['time'] = epoch_dropped_data['time']
+            power_data = epoch_dropped_data.filter(regex='ENERGY')
+            power_data['TIME'] = epoch_dropped_data['TIME']
             power_data = power_data.diff().dropna()
-            power_data.rename(columns={'time': 'elapsed_time'}, inplace=True)
+            power_data.rename(columns={'TIME': 'ELAPSED_TIME'}, inplace=True)
             power_data = power_data.loc[(power_data != 0).all(axis=1)]  # Will drop any row that is all 0's
 
-            pkg_energy_cols = [s for s in power_data.keys() if 'energy_package' in s]
-            dram_energy_cols = [s for s in power_data.keys() if 'energy_dram' in s]
-            power_data['socket_power'] = power_data[pkg_energy_cols].sum(axis=1) / power_data['elapsed_time']
-            power_data['dram_power'] = power_data[dram_energy_cols].sum(axis=1) / power_data['elapsed_time']
-            power_data['combined_power'] = power_data['socket_power'] + power_data['dram_power']
+            pkg_energy_cols = [s for s in power_data.keys() if 'ENERGY_PACKAGE' in s]
+            dram_energy_cols = [s for s in power_data.keys() if 'ENERGY_DRAM' in s]
+            power_data['SOCKET_POWER'] = power_data[pkg_energy_cols].sum(axis=1) / power_data['ELAPSED_TIME']
+            power_data['DRAM_POWER'] = power_data[dram_energy_cols].sum(axis=1) / power_data['ELAPSED_TIME']
+            power_data['COMBINED_POWER'] = power_data['SOCKET_POWER'] + power_data['DRAM_POWER']
 
             pandas.set_option('display.width', 100)
             launcher.write_log(name, 'Power stats from {} :\n{}'.format(nn, power_data.describe()))
@@ -751,13 +715,13 @@ class TestIntegration(unittest.TestCase):
 
         for node_name, power_data in all_power_data.iteritems():
             # Allow for overages of 2% at the 75th percentile.
-            self.assertGreater(self._options['power_budget'] * 1.02, power_data['socket_power'].quantile(.75))
+            self.assertGreater(self._options['power_budget'] * 1.02, power_data['SOCKET_POWER'].quantile(.75))
 
             # TODO Checks on the maximum power computed during the run?
             # TODO Checks to see how much power was left on the table?
 
-    @skip_unless_run_long_tests()
-    @skip_unless_slurm_batch()
+    @util.skip_unless_run_long_tests()
+    @util.skip_unless_slurm_batch()
     def test_power_balancer(self):
         name = 'test_power_balancer'
         num_node = 4
@@ -769,19 +733,21 @@ class TestIntegration(unittest.TestCase):
         margin_factor =  0.25
         app_conf = geopmpy.io.BenchConf(name + '_app.config')
         self._tmp_files.append(app_conf.get_path())
-        app_conf.append_region('dgemm', 8.0)
+        app_conf.append_region('dgemm-imbalance', 8.0)
         app_conf.append_region('all2all', 0.05)
         app_conf.set_loop_count(loop_count)
 
-        fam, mod = get_platform()
-        if fam == 6 and mod in (45, 47, 79):
-            # set budget for BDX server
-            power_budget = 200
-        elif fam == 6 and mod == 87:
+        # Update app config with imbalance
+        alloc_nodes = geopm_test_launcher.TestLauncher.get_alloc_nodes()
+        for nn in range(len(alloc_nodes) // 2):
+            app_conf.append_imbalance(alloc_nodes[nn], 0.5)
+
+        fam, mod = geopm_test_launcher.get_platform()
+        if fam == 6 and mod == 87:
             # budget for KNL
             power_budget = 130
         else:
-            power_budget = 130
+            power_budget = 200
         self._options = {'power_budget': power_budget}
         gov_agent_conf_path = name + '_gov_agent.config'
         bal_agent_conf_path = name + '_bal_agent.config'
@@ -812,27 +778,27 @@ class TestIntegration(unittest.TestCase):
             for nn in node_names:
                 tt = self._output.get_trace_data(node_name=nn)
 
-                first_epoch_index = tt.loc[tt['epoch_count'] == 0][:1].index[0]
+                first_epoch_index = tt.loc[tt['EPOCH_COUNT'] == 0][:1].index[0]
                 epoch_dropped_data = tt[first_epoch_index:]  # Drop all startup data
 
-                power_data = epoch_dropped_data.filter(regex='energy')
-                power_data['time'] = epoch_dropped_data['time']
+                power_data = epoch_dropped_data.filter(regex='ENERGY')
+                power_data['TIME'] = epoch_dropped_data['TIME']
                 power_data = power_data.diff().dropna()
-                power_data.rename(columns={'time': 'elapsed_time'}, inplace=True)
+                power_data.rename(columns={'TIME': 'ELAPSED_TIME'}, inplace=True)
                 power_data = power_data.loc[(power_data != 0).all(axis=1)]  # Will drop any row that is all 0's
 
-                pkg_energy_cols = [s for s in power_data.keys() if 'energy_package' in s]
-                dram_energy_cols = [s for s in power_data.keys() if 'energy_dram' in s]
-                power_data['socket_power'] = power_data[pkg_energy_cols].sum(axis=1) / power_data['elapsed_time']
-                power_data['dram_power'] = power_data[dram_energy_cols].sum(axis=1) / power_data['elapsed_time']
-                power_data['combined_power'] = power_data['socket_power'] + power_data['dram_power']
+                pkg_energy_cols = [s for s in power_data.keys() if 'ENERGY_PACKAGE' in s]
+                dram_energy_cols = [s for s in power_data.keys() if 'ENERGY_DRAM' in s]
+                power_data['SOCKET_POWER'] = power_data[pkg_energy_cols].sum(axis=1) / power_data['ELAPSED_TIME']
+                power_data['DRAM_POWER'] = power_data[dram_energy_cols].sum(axis=1) / power_data['ELAPSED_TIME']
+                power_data['COMBINED_POWER'] = power_data['SOCKET_POWER'] + power_data['DRAM_POWER']
 
                 pandas.set_option('display.width', 100)
                 launcher.write_log(name, 'Power stats from {} {} :\n{}'.format(agent, nn, power_data.describe()))
 
                 # Get final power limit set on the node
                 if agent == 'power_balancer':
-                    power_limits.append(epoch_dropped_data['power_limit'][-1])
+                    power_limits.append(epoch_dropped_data['POWER_LIMIT'][-1])
 
             if agent == 'power_balancer':
                 avg_power_limit = sum(power_limits) / len(power_limits)
@@ -887,10 +853,10 @@ class TestIntegration(unittest.TestCase):
 
         for nn in node_names:
             tt = self._output.get_trace_data(node_name=nn)
-            tt = tt.set_index(['region_hash'], append=True)
-            tt = tt.groupby(level=['region_hash'])
+            tt = tt.set_index(['REGION_HASH'], append=True)
+            tt = tt.groupby(level=['REGION_HASH'])
             for region_hash, data in tt:
-                tmp = data['region_progress'].diff()
+                tmp = data['REGION_PROGRESS'].diff()
                 #@todo legacy branch?
                 # Look for changes in progress that are more negative
                 # than can be expected due to extrapolation error.
@@ -899,8 +865,8 @@ class TestIntegration(unittest.TestCase):
                     launcher.write_log(name, '{}'.format(negative_progress))
                     self.assertEqual(0, len(negative_progress))
 
-    @skip_unless_run_long_tests()
-    @skip_unless_optimized()
+    @util.skip_unless_run_long_tests()
+    @util.skip_unless_optimized()
     def test_sample_rate(self):
         """
         Check that sample rate is regular and fast.
@@ -931,7 +897,7 @@ class TestIntegration(unittest.TestCase):
 
         for nn in node_names:
             tt = self._output.get_trace_data(node_name=nn)
-            delta_t = tt['time'].diff()
+            delta_t = tt['TIME'].diff()
             delta_t = delta_t.loc[delta_t != 0]
             self.assertGreater(max_mean, delta_t.mean())
             # WARNING : The following line may mask issues in the sampling rate. To do a fine grained analysis, comment
@@ -1008,9 +974,12 @@ class TestIntegration(unittest.TestCase):
         for nn in node_names:
             ignore_data = self._output.get_report_data(node_name=nn, region='ignore')
             app_data = self._output.get_app_total_data(node_name=nn)
-            self.assertEqual(ignore_data['runtime'].item(), app_data['ignore-runtime'].item())
+            # ignore runtime includes MPI regions
+            mpi_data = self._output.get_report_data(node_name=nn, region='MPI_Barrier')
+            self.assertNear(ignore_data['runtime'].item() + mpi_data['runtime'].item(),
+                            app_data['ignore-runtime'].item(), 0.00005)
 
-    @skip_unless_config_enable('ompt')
+    @util.skip_unless_config_enable('ompt')
     def test_unmarked_ompt(self):
         name = 'test_unmarked_ompt'
         report_path = name + '.report'
@@ -1052,20 +1021,21 @@ class TestIntegration(unittest.TestCase):
             gemm_region = [key for key in region_names if key.lower().find('gemm') != -1]
             self.assertLessEqual(1, len(gemm_region))
 
-    @skip_unless_cpufreq()
-    @skip_unless_slurm_batch()
+    @util.skip_unless_cpufreq()
+    @util.skip_unless_slurm_batch()
+    @util.skip_unless_optimized()
     def test_agent_frequency_map(self):
         """
         Test of the FrequencyMapAgent.
         """
-        min_freq = do_geopmread("CPUINFO::FREQ_MIN board 0")
-        max_freq = do_geopmread("CPUINFO::FREQ_MAX board 0")
-        sticker_freq = do_geopmread("CPUINFO::FREQ_STICKER board 0")
-        freq_step = do_geopmread("CPUINFO::FREQ_STEP board 0")
+        min_freq = geopm_test_launcher.geopmread("CPUINFO::FREQ_MIN board 0")
+        max_freq = geopm_test_launcher.geopmread("CPUINFO::FREQ_MAX board 0")
+        sticker_freq = geopm_test_launcher.geopmread("CPUINFO::FREQ_STICKER board 0")
+        freq_step = geopm_test_launcher.geopmread("CPUINFO::FREQ_STEP board 0")
         self._agent = "frequency_map"
         self._options = {'frequency_min': min_freq,
                          'frequency_max': max_freq}
-        name = 'test_frequency_map'
+        name = 'test_agent_frequency_map'
         report_path = name + '.report'
         trace_path = name + '.trace'
         num_node = 1
@@ -1118,22 +1088,61 @@ class TestIntegration(unittest.TestCase):
                     msg = region_name + " frequency should be near assigned map frequency"
                     self.assertNear(region_data['frequency'].item(), data[region_name] / sticker_freq * 100, msg=msg)
 
-    @skip_unless_run_long_tests()
-    @skip_unless_cpufreq()
-    @skip_unless_slurm_batch()
+    def test_agent_energy_efficient_single_region(self):
+        """
+        Test of the EnergyEfficientAgent against single region loop.
+        """
+        name = 'test_energy_efficient_single_region'
+        min_freq = geopm_test_launcher.geopmread("CPUINFO::FREQ_MIN board 0")
+        sticker_freq = geopm_test_launcher.geopmread("CPUINFO::FREQ_STICKER board 0")
+        freq_step = geopm_test_launcher.geopmread("CPUINFO::FREQ_STEP board 0")
+        self._agent = "energy_efficient"
+        report_path = name + '.report'
+        trace_path = name + '.trace'
+        num_node = 1
+        num_rank = 4
+        loop_count = 100
+        app_conf = geopmpy.io.BenchConf(name + '_app.config')
+        self._tmp_files.append(app_conf.get_path())
+        app_conf.set_loop_count(loop_count)
+        app_conf.append_region('spin', 0.1)
+        self._options = {'frequency_min': min_freq,
+                         'frequency_max': sticker_freq}
+        agent_conf = geopmpy.io.AgentConf(name + '_agent.config', self._agent, self._options)
+        self._tmp_files.append(agent_conf.get_path())
+        launcher = geopm_test_launcher.TestLauncher(app_conf, agent_conf, report_path, trace_path)
+        launcher.set_num_node(num_node)
+        launcher.set_num_rank(num_rank)
+        launcher.run(name)
+        self._output = geopmpy.io.AppOutput(report_path, trace_path + '*')
+        node_names = self._output.get_node_names()
+        self.assertEqual(len(node_names), num_node)
+        regions = self._output.get_region_names()
+        for nn in node_names:
+            for region_name in regions:
+                report = geopmpy.io.RawReport(report_path)
+                if (region_name in ['spin']):
+                    region = report.raw_region(nn, region_name)
+                    msg = region_name + " frequency should be minimum frequency as specified by policy"
+                    self.assertEqual(region['requested-online-frequency'], min_freq, msg=msg)  # freq should reduce
+
+
+    @util.skip_unless_run_long_tests()
+    @util.skip_unless_cpufreq()
+    @util.skip_unless_slurm_batch()
     def test_agent_energy_efficient(self):
         """
         Test of the EnergyEfficientAgent.
         """
         name = 'test_energy_efficient_sticker'
-        min_freq = do_geopmread("CPUINFO::FREQ_MIN board 0")
-        max_freq = do_geopmread("CPUINFO::FREQ_MAX board 0")
-        sticker_freq = do_geopmread("CPUINFO::FREQ_STICKER board 0")
-        freq_step = do_geopmread("CPUINFO::FREQ_STEP board 0")
+        min_freq = geopm_test_launcher.geopmread("CPUINFO::FREQ_MIN board 0")
+        max_freq = geopm_test_launcher.geopmread("CPUINFO::FREQ_MAX board 0")
+        sticker_freq = geopm_test_launcher.geopmread("CPUINFO::FREQ_STICKER board 0")
+        freq_step = geopm_test_launcher.geopmread("CPUINFO::FREQ_STEP board 0")
         self._agent = "energy_efficient"
         num_node = 1
         num_rank = 4
-        loop_count = 25
+        loop_count = 200
         dgemm_bigo = 20.25
         stream_bigo = 1.449
         dgemm_bigo_jlse = 35.647
@@ -1191,7 +1200,7 @@ class TestIntegration(unittest.TestCase):
             self.assertLess(-0.1, runtime_savings_epoch)  # want -10% or better
             self.assertLess(0.0, energy_savings_epoch)
 
-    @skip_unless_slurm_batch()
+    @util.skip_unless_slurm_batch()
     def test_controller_signal_handling(self):
         """
         Check that Controller handles signals and cleans up.
@@ -1208,7 +1217,7 @@ class TestIntegration(unittest.TestCase):
         agent_conf = geopmpy.io.AgentConf(name + '_agent.config', self._agent, self._options)
         self._tmp_files.append(agent_conf.get_path())
 
-        launcher = geopm_test_launcher.TestLauncher(app_conf, agent_conf, report_path)
+        launcher = geopm_test_launcher.TestLauncher(app_conf, agent_conf, report_path, fatal_test=True)
         launcher.set_pmpi_ctl("application")
         launcher.set_num_node(num_node)
         launcher.set_num_rank(num_rank)
@@ -1230,8 +1239,8 @@ class TestIntegration(unittest.TestCase):
             err = kp.returncode
             if err != 0:
                 launcher.write_log(name, "Output from SSH:")
-                launcher.write_log(name, str(stdout))
-                launcher.write_log(name, str(stderr))
+                launcher.write_log(name, stdout.decode())
+                launcher.write_log(name, stderr.decode())
                 self.skipTest(name + ' requires passwordless SSH between allocated nodes.')
 
         message = "Error: <geopm> Runtime error: Signal 15"
@@ -1256,12 +1265,12 @@ class TestIntegrationGeopmio(unittest.TestCase):
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             for exp in expected:
                 line = proc.stdout.readline()
-                while self.skip_warning_string in line:
+                while self.skip_warning_string.encode() in line:
                     line = proc.stdout.readline()
-                self.assertIn(exp, line)
+                self.assertIn(exp.encode(), line)
             for line in proc.stdout:
-                if self.skip_warning_string not in line:
-                    self.assertNotIn('Error', line)
+                if self.skip_warning_string.encode() not in line:
+                    self.assertNotIn(b'Error', line)
         except subprocess.CalledProcessError as ex:
             sys.stderr.write('{}\n'.format(ex.output))
 
@@ -1270,9 +1279,9 @@ class TestIntegrationGeopmio(unittest.TestCase):
             proc = subprocess.Popen([self.exec_name] + args,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             for line in proc.stdout:
-                if self.skip_warning_string in line:
+                if self.skip_warning_string.encode() in line:
                     continue
-                if line.startswith('0x'):
+                if line.startswith(b'0x'):
                     value = int(line)
                 else:
                     value = float(line)
@@ -1286,8 +1295,8 @@ class TestIntegrationGeopmio(unittest.TestCase):
             proc = subprocess.Popen([self.exec_name] + args,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             for line in proc.stdout:
-                if self.skip_warning_string not in line:
-                    self.assertNotIn('Error', line)
+                if self.skip_warning_string.encode() not in line:
+                    self.assertNotIn(b'Error', line)
         except subprocess.CalledProcessError as ex:
             sys.stderr.write('{}\n'.format(ex.output))
 
@@ -1325,6 +1334,7 @@ class TestIntegrationGeopmio(unittest.TestCase):
         self.check_output(['--domain', 'INVALID'], ['unable to determine signal type'])
         self.check_output(['--domain', '--info'], ['info about domain not implemented'])
 
+    @util.skip_unless_slurm_batch()
     def test_geopmread_all_signal_agg(self):
         '''
         Check that all reported signals can be read for board, aggregating if necessary.
@@ -1335,13 +1345,14 @@ class TestIntegrationGeopmio(unittest.TestCase):
             proc = subprocess.Popen([self.exec_name],
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             for line in proc.stdout:
-                if self.skip_warning_string not in line:
+                if self.skip_warning_string.encode() not in line:
                     all_signals.append(line.strip())
         except subprocess.CalledProcessError as ex:
             sys.stderr.write('{}\n'.format(ex.output))
         for sig in all_signals:
-            self.check_no_error([sig, 'board', '0'])
+            self.check_no_error([sig.decode(), 'board', '0'])
 
+    @util.skip_unless_slurm_batch()
     def test_geopmread_signal_value(self):
         '''
         Check that some specific signals give a sane value.
@@ -1380,11 +1391,11 @@ class TestIntegrationGeopmio(unittest.TestCase):
             proc = subprocess.Popen([self.exec_name], env=custom_env,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             for line in proc.stdout:
-                if self.skip_warning_string not in line:
+                if self.skip_warning_string.encode() not in line:
                     all_signals.append(line.strip())
         except subprocess.CalledProcessError as ex:
             sys.stderr.write('{}\n'.format(ex.output))
-        self.assertIn('MSR::CORE_PERF_LIMIT_REASONS#', all_signals)
+        self.assertIn(b'MSR::CORE_PERF_LIMIT_REASONS#', all_signals)
 
     def test_geopmwrite_command_line(self):
         '''
@@ -1419,14 +1430,14 @@ class TestIntegrationGeopmio(unittest.TestCase):
         self.check_output(['--domain', 'INVALID'], ['unable to determine control type'])
         self.check_output(['--domain', '--info'], ['info about domain not implemented'])
 
-    @skip_unless_slurm_batch()
+    @util.skip_unless_slurm_batch()
     def test_geopmwrite_set_freq(self):
         '''
         Check that geopmwrite can be used to set frequency.
         '''
         def read_stdout_line(stdout):
             line = stdout.readline()
-            while self.skip_warning_string in line:
+            while self.skip_warning_string.encode() in line:
                 line = stdout.readline()
             return line.strip()
 
@@ -1452,10 +1463,10 @@ class TestIntegrationGeopmio(unittest.TestCase):
 
         read_proc = subprocess.Popen(['geopmread', '--domain', 'FREQUENCY'],
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        read_domain = read_stdout_line(read_proc.stdout)
+        read_domain = read_stdout_line(read_proc.stdout).decode()
         write_proc = subprocess.Popen([self.exec_name, '--domain', 'FREQUENCY'],
                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        write_domain = read_stdout_line(write_proc.stdout)
+        write_domain = read_stdout_line(write_proc.stdout).decode()
         min_freq, max_freq = read_min_max_freq()
 
         old_freq = read_current_freq(write_domain, 'MSR::PERF_CTL:FREQ')
@@ -1486,12 +1497,12 @@ class TestIntegrationGeopmagent(unittest.TestCase):
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             for exp in expected:
                 line = proc.stdout.readline()
-                while self.skip_warning_string in line or line == '\n':
+                while self.skip_warning_string.encode() in line or line == b'\n':
                     line = proc.stdout.readline()
-                self.assertIn(exp, line)
+                self.assertIn(exp.encode(), line)
             for line in proc.stdout:
-                if self.skip_warning_string not in line:
-                    self.assertNotIn('Error', line)
+                if self.skip_warning_string.encode() not in line:
+                    self.assertNotIn(b'Error', line)
         except subprocess.CalledProcessError as ex:
             sys.stderr.write('{}\n'.format(ex.output))
 
@@ -1502,24 +1513,24 @@ class TestIntegrationGeopmagent(unittest.TestCase):
         except subprocess.CalledProcessError as ex:
             sys.stderr.write('{}\n'.format(ex.output))
         line = proc.stdout.readline()
-        while self.skip_warning_string in line or line == '\n':
+        while self.skip_warning_string.encode() in line or line == b'\n':
             line = proc.stdout.readline()
         try:
-            out_json = json.loads(line)
+            out_json = json.loads(line.decode())
         except ValueError:
             self.fail('Could not convert json string: {}\n'.format(line))
         self.assertEqual(expected, out_json)
         for line in proc.stdout:
-            if self.skip_warning_string not in line:
-                self.assertNotIn('Error', line)
+            if self.skip_warning_string.encode() not in line:
+                self.assertNotIn(b'Error', line)
 
     def check_no_error(self, args):
         try:
             proc = subprocess.Popen([self.exec_name] + args,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             for line in proc.stdout:
-                if self.skip_warning_string not in line:
-                    self.assertNotIn('Error', line)
+                if self.skip_warning_string.encode() not in line:
+                    self.assertNotIn(b'Error', line)
         except subprocess.CalledProcessError as ex:
             sys.stderr.write('{}\n'.format(ex.output))
 
@@ -1558,13 +1569,16 @@ class TestIntegrationGeopmagent(unittest.TestCase):
                                {"FREQ_MIN": 1.2e9, "FREQ_MAX": "NAN"})
         self.check_json_output(['--agent', 'energy_efficient', '--policy', 'nan,1.3e9'],
                                {"FREQ_MIN": "NAN", "FREQ_MAX": 1.3e9})
+        # unspecified policy values are accepted
+        self.check_json_output(['--agent', 'power_balancer', '--policy', '150'],
+                               {'POWER_CAP': 150})
 
         # errors
         self.check_output(['--agent', 'power_governor', '--policy', 'None'],
                           ['not a valid floating-point number', 'Invalid argument'])
         self.check_output(['--agent', 'monitor', '--policy', '300'],
                           ['agent takes no parameters', 'Invalid argument'])
-        self.check_output(['--agent', 'energy_efficient', '--policy', '2.0e9'],
+        self.check_output(['--agent', 'energy_efficient', '--policy', '2.0e9,5.0e9,4.5e9,6.7'],
                           ['Number of policies', 'Invalid argument'])
 
 

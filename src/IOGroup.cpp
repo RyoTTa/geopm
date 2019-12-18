@@ -30,12 +30,22 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <functional>
+
 #include "IOGroup.hpp"
 
 #include "MSRIOGroup.hpp"
 #include "CpuinfoIOGroup.hpp"
 #include "TimeIOGroup.hpp"
+#include "Helper.hpp"
 #include "config.h"
+#ifdef GEOPM_CNL_IOGROUP
+#include "CNLIOGroup.hpp"
+#endif
+#ifdef GEOPM_DEBUG
+#include <iostream>
+#endif
+
 
 namespace geopm
 {
@@ -49,6 +59,26 @@ namespace geopm
                                           TimeIOGroup::make_plugin);
         g_plugin_factory->register_plugin(CpuinfoIOGroup::plugin_name(),
                                           CpuinfoIOGroup::make_plugin);
+#ifdef GEOPM_CNL_IOGROUP
+        g_plugin_factory->register_plugin(CNLIOGroup::plugin_name(),
+                                          CNLIOGroup::make_plugin);
+#endif
+    }
+
+    std::function<std::string(double)> IOGroup::format_function(const std::string &signal_name) const
+    {
+#ifdef GEOPM_DEBUG
+        static bool is_once = true;
+        if (is_once) {
+            is_once = false;
+            std::cerr << "Warning: <geopm> Use of geopm::IOGroup::format_function() is deprecated, each IOGroup will be required implement this method in the future.\n";
+        }
+#endif
+        std::function<std::string(double)> result = string_format_double;
+        if (string_ends_with(signal_name, "#")) {
+            result = string_format_raw64;
+        }
+        return result;
     }
 
     PluginFactory<IOGroup> &iogroup_factory(void)

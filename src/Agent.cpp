@@ -34,6 +34,7 @@
 
 #include <cmath>
 #include <sstream>
+#include <iostream>
 
 #include "geopm_agent.h"
 #include "string.h"
@@ -42,6 +43,10 @@
 #include "PowerGovernorAgent.hpp"
 #include "EnergyEfficientAgent.hpp"
 #include "FrequencyMapAgent.hpp"
+#include "Environment.hpp"
+#include "Endpoint.hpp"
+#include "SharedMemoryUser.hpp"
+#include "Helper.hpp"
 #include "config.h"
 
 namespace geopm
@@ -84,6 +89,18 @@ namespace geopm
     const std::string Agent::m_num_policy_string = "NUM_POLICY";
     const std::string Agent::m_sample_prefix = "SAMPLE_";
     const std::string Agent::m_policy_prefix = "POLICY_";
+
+    std::vector<std::function<std::string(double)> > Agent::trace_formats(void) const
+    {
+#ifdef GEOPM_DEBUG
+        static bool is_once = true;
+        if (is_once) {
+            is_once = false;
+            std::cerr << "Warning: <geopm> Use of geopm::Agent::trace_formats() is deprecated, each Agent will be required implement this method in the future.\n";
+        }
+#endif
+        return {};
+    }
 
     int Agent::num_sample(const std::map<std::string, std::string> &dictionary)
     {
@@ -139,7 +156,7 @@ namespace geopm
     }
 
     std::map<std::string, std::string> Agent::make_dictionary(const std::vector<std::string> &policy_names,
-                                                               const std::vector<std::string> &sample_names)
+                                                              const std::vector<std::string> &sample_names)
     {
         std::map<std::string, std::string> result;
         for (size_t sample_idx = 0; sample_idx != sample_names.size(); ++sample_idx) {
@@ -169,7 +186,6 @@ namespace geopm
             out_sample[sig_idx] = agg_func[sig_idx](child_sample);
         }
     }
-
 }
 
 int geopm_agent_supported(const char *agent_name)
@@ -315,16 +331,33 @@ int geopm_agent_policy_json(const char *agent_name,
                             size_t json_string_max,
                             char *json_string)
 {
-    int num_policy;
+    int num_policy = 0;
     int err = geopm_agent_num_policy(agent_name, &num_policy);
+    if (!err) {
+        err = geopm_agent_policy_json_partial(agent_name, num_policy, policy_array,
+                                              json_string_max, json_string);
+    }
+    return err;
+}
 
+int geopm_agent_policy_json_partial(const char *agent_name,
+                                    size_t policy_array_size,
+                                    const double *policy_array,
+                                    size_t json_string_max,
+                                    char *json_string)
+{
     std::stringstream output_str;
     char policy_name[json_string_max];
     std::string policy_value;
+    int num_policy = 0;
+    int err = geopm_agent_num_policy(agent_name, &num_policy);
+    if (!err && (num_policy < 0 || policy_array_size > (size_t)num_policy)) {
+        err = GEOPM_ERROR_INVALID;
+    }
     try {
         if (!err) {
             output_str << "{";
-            for (int i = 0; !err && i < num_policy; ++i) {
+            for (size_t i = 0; !err && i < policy_array_size; ++i) {
                 if (i > 0) {
                     output_str << ", ";
                 }
@@ -374,7 +407,6 @@ int geopm_agent_name(int agent_idx,
     catch (...) {
         err = geopm::exception_handler(std::current_exception(), false);
     }
-
     return err;
 }
 
@@ -388,6 +420,7 @@ int geopm_agent_num_avail(int* num_agent)
     catch (...) {
         err = geopm::exception_handler(std::current_exception(), false);
     }
-
     return err;
 }
+
+// geopm_agent_enforce_policy is defined in Controller.cpp

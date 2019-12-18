@@ -31,9 +31,12 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+from __future__ import absolute_import
+from __future__ import division
+
 import unittest
 import math
-import geopm_context
+import os
 import geopmpy.launcher
 
 
@@ -49,7 +52,7 @@ class Topo():
         self.hyperthreads = {}
         for core in self.core_list:
             self.hyperthreads[core] = [core + ht*self._num_core for ht in range(1, self._hthread_per_core)]
-        assert math.ceil(self._num_core / self._num_socket) == (self._num_core // self._num_socket)
+        assert self._num_core % self._num_socket == 0
         self.socket_cores = {}
         for sock in range(self._num_socket):
             self.socket_cores[sock] = [sock*self._core_per_socket + cc for cc in range(self._core_per_socket)]
@@ -86,6 +89,8 @@ class TestAffinity(unittest.TestCase):
         self.quartz_topo = Topo(num_socket=2, core_per_socket=18, hthread_per_core=2)
         self.xeon_topo = Topo(num_socket=2, core_per_socket=22, hthread_per_core=2)
         self.knl_topo = Topo(num_socket=1, core_per_socket=64, hthread_per_core=4)
+        if os.getenv('OMP_NUM_THREADS') != None:
+            self.fail('ERROR: OMP_NUM_THREADS was set in the environment!')
         # TODO: machine with 1 core only, 2 cores, 1 thread per core
 
     def check_process_mode(self, geopm_cpus, app_cpus, launch_args):

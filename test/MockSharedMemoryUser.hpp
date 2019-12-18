@@ -37,6 +37,7 @@
 #include "gmock/gmock.h"
 #include <vector>
 #include "SharedMemoryUser.hpp"
+#include "SharedMemoryScopedLock.hpp"
 
 class MockSharedMemoryUser : public geopm::SharedMemoryUser
 {
@@ -62,7 +63,8 @@ class MockSharedMemoryUser : public geopm::SharedMemoryUser
                            size_t (void));
         MOCK_METHOD0(unlink,
                      void (void));
-
+        MOCK_METHOD0(get_scoped_lock,
+                     std::unique_ptr<geopm::SharedMemoryScopedLock>(void));
     protected:
         std::vector<char> m_buffer;
 };

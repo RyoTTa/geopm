@@ -30,24 +30,30 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <functional>
-
-#include "gtest/gtest.h"
-#include "gmock/gmock.h"
-#include "geopm_test.hpp"
-#include "geopm_internal.h"
-#include "geopm_env.h"
-#include "Helper.hpp"
 #include "Profile.hpp"
+
+#include <sched.h>
+#include <unistd.h>
+
+#include <cstring>
+#include <fstream>
+#include <functional>
+#include <memory>
+
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+
 #include "Exception.hpp"
-#include "SharedMemoryImp.hpp"
+#include "Helper.hpp"
 #include "MockComm.hpp"
+#include "MockControlMessage.hpp"
 #include "MockPlatformTopo.hpp"
 #include "MockProfileTable.hpp"
 #include "MockProfileThreadTable.hpp"
 #include "MockSampleScheduler.hpp"
-#include "MockControlMessage.hpp"
-#include "MockComm.hpp"
+#include "SharedMemoryImp.hpp"
+#include "geopm_internal.h"
+#include "geopm_test.hpp"
 
 using geopm::Exception;
 using geopm::Profile;
@@ -55,9 +61,46 @@ using geopm::ProfileImp;
 using geopm::SharedMemoryImp;
 using geopm::PlatformTopo;
 
-extern "C"
+static size_t num_configured_cpus()
 {
-    void geopm_env_load(void);
+    ssize_t num_cpus = sysconf(_SC_NPROCESSORS_CONF);
+    if (num_cpus < 0) {
+        throw Exception("Unable to get cpu count for tests",
+                        errno ? errno : GEOPM_ERROR_RUNTIME, __FILE__, __LINE__);
+    }
+    return num_cpus;
+}
+
+// Get the number of CPUs in the cpuset of the test process
+static size_t num_affinitized_cpus()
+{
+    // The number of bits in the system's CPU set isn't known ahead of time.
+    // We need to repeatedly try with increasing set sizes until we stop
+    // seeing errors for sets that are too small, or until we give up.
+    int cpus_in_set = num_configured_cpus();
+    static const int MAX_CPUS = 1 << 30;
+    while (cpus_in_set < MAX_CPUS) {
+        auto cpu_set = std::unique_ptr<cpu_set_t, std::function<void(cpu_set_t *)> >(
+            CPU_ALLOC(cpus_in_set), [](cpu_set_t *cpu_set) { CPU_FREE(cpu_set); });
+        size_t cpu_set_size = CPU_ALLOC_SIZE(cpus_in_set);
+
+        if (sched_getaffinity(0, cpu_set_size, cpu_set.get()) == -1) {
+            if (errno != EINVAL) {
+                throw Exception("Unable to get affinity mask for tests",
+                                errno ? errno : GEOPM_ERROR_RUNTIME, __FILE__,
+                                __LINE__);
+            }
+            // Otherwise, move on to the next-larger attempt
+            cpus_in_set *= 2;
+        }
+        else {
+            return CPU_COUNT_S(cpu_set_size, cpu_set.get());
+        }
+    }
+
+    throw Exception("Unable to get cpu count for tests. Gave up at cpu set size of " +
+                        std::to_string(cpus_in_set),
+                    GEOPM_ERROR_RUNTIME, __FILE__, __LINE__);
 }
 
 class ProfileTestControlMessage : public MockControlMessage
@@ -161,6 +204,9 @@ class ProfileTest : public :: testing :: Test
     protected:
         const std::string M_SHM_KEY;
         const std::string M_PROF_NAME;
+        const std::string M_REPORT;
+        const double M_TIMEOUT;
+        const bool M_DO_REGION_BARRIER;
         const size_t M_SHMEM_REGION_SIZE;
         const size_t M_SHM_COMM_SIZE;
         const int M_NUM_CPU;
@@ -187,11 +233,16 @@ class ProfileTestIntegration : public ProfileTest
         {
         }
         ~ProfileTestIntegration() = default;
+    protected:
+        void test_all_cpus_are_assigned_a_rank(size_t cpu_count, size_t cpu_set_size);
 };
 
 ProfileTest::ProfileTest()
     : M_SHM_KEY("profile_test_shm_key")
     , M_PROF_NAME("profile_test")
+    , M_REPORT("report_test")
+    , M_TIMEOUT(0)
+    , M_DO_REGION_BARRIER(false)
     , M_SHMEM_REGION_SIZE(12288)
     , M_SHM_COMM_SIZE(2)
     , M_NUM_CPU(2)
@@ -199,18 +250,12 @@ ProfileTest::ProfileTest()
     , m_region_names({"test_region_name", "test_other_name", "recursive_region"})
     , m_rank({0, 1})
     , m_topo(M_NUM_CPU)
+    , m_comm(std::make_shared<MockComm>())
 {
-    m_comm = std::make_shared<MockComm>();
-
-    setenv("GEOPM_REGION_BARRIER", "1", 1);
-    setenv("GEOPM_PROFILE_TIMEOUT", "1", 1);
-    geopm_env_load();
 }
 
 ProfileTest::~ProfileTest()
 {
-    unsetenv("GEOPM_REGION_BARRIER");
-    unsetenv("GEOPM_PROFILE_TIMEOUT");
 }
 
 TEST_F(ProfileTest, region)
@@ -235,7 +280,9 @@ TEST_F(ProfileTest, region)
         m_shm_comm = std::make_shared<ProfileTestComm>(shm_rank, M_SHM_COMM_SIZE);
         m_world_comm = geopm::make_unique<ProfileTestComm>(world_rank, m_shm_comm);
 
-        m_profile = geopm::make_unique<ProfileImp>(M_PROF_NAME, M_SHM_KEY, std::move(m_world_comm),
+        m_profile = geopm::make_unique<ProfileImp>(M_PROF_NAME, M_SHM_KEY,
+                                                   M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+                                                   std::move(m_world_comm),
                                                    std::move(m_ctl_msg), m_topo, std::move(m_table),
                                                    std::move(m_tprof), std::move(m_scheduler), m_comm);
         long hint = 0;
@@ -278,9 +325,11 @@ TEST_F(ProfileTest, enter_exit)
     m_world_comm = geopm::make_unique<ProfileTestComm>(world_rank, m_shm_comm);
     m_scheduler = geopm::make_unique<ProfileTestSampleScheduler>();
 
-    m_profile = geopm::make_unique<ProfileImp>(M_PROF_NAME, M_SHM_KEY, std::move(m_world_comm),
-                                            std::move(m_ctl_msg), m_topo, std::move(m_table),
-                                            std::move(m_tprof), std::move(m_scheduler), m_comm);
+    m_profile = geopm::make_unique<ProfileImp>(M_PROF_NAME, M_SHM_KEY,
+                                               M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+                                               std::move(m_world_comm),
+                                               std::move(m_ctl_msg), m_topo, std::move(m_table),
+                                               std::move(m_tprof), std::move(m_scheduler), m_comm);
     long hint = 0;
     for (size_t idx = 0; idx < m_region_names.size(); ++idx) {
         region_name = m_region_names[idx];
@@ -343,7 +392,8 @@ TEST_F(ProfileTest, progress)
     EXPECT_CALL(*m_scheduler, record_exit())
         .WillOnce(testing::Return());
 
-    m_profile = geopm::make_unique<ProfileImp>(M_PROF_NAME, M_SHM_KEY, std::move(m_world_comm),
+    m_profile = geopm::make_unique<ProfileImp>(M_PROF_NAME, M_SHM_KEY, M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+                                               std::move(m_world_comm),
                                                std::move(m_ctl_msg), m_topo, std::move(m_table),
                                                std::move(m_tprof), std::move(m_scheduler), m_comm);
     region_name = m_region_names[0];
@@ -383,7 +433,8 @@ TEST_F(ProfileTest, epoch)
     m_world_comm = geopm::make_unique<ProfileTestComm>(world_rank, m_shm_comm);
     m_scheduler = geopm::make_unique<ProfileTestSampleScheduler>();
 
-    m_profile = geopm::make_unique<ProfileImp>(M_PROF_NAME, M_SHM_KEY, std::move(m_world_comm),
+    m_profile = geopm::make_unique<ProfileImp>(M_PROF_NAME, M_SHM_KEY, M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+                                               std::move(m_world_comm),
                                                std::move(m_ctl_msg), m_topo, std::move(m_table),
                                                std::move(m_tprof), std::move(m_scheduler), m_comm);
     m_profile->epoch();
@@ -410,7 +461,8 @@ TEST_F(ProfileTest, shutdown)
     m_world_comm = geopm::make_unique<ProfileTestComm>(world_rank, m_shm_comm);
     m_scheduler = geopm::make_unique<ProfileTestSampleScheduler>();
 
-    m_profile = geopm::make_unique<ProfileImp>(M_PROF_NAME, M_SHM_KEY, std::move(m_world_comm),
+    m_profile = geopm::make_unique<ProfileImp>(M_PROF_NAME, M_SHM_KEY, M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+                                               std::move(m_world_comm),
                                                std::move(m_ctl_msg), m_topo, std::move(m_table),
                                                std::move(m_tprof), std::move(m_scheduler), m_comm);
     m_profile->shutdown();
@@ -451,7 +503,8 @@ TEST_F(ProfileTest, tprof_table)
     m_world_comm = geopm::make_unique<ProfileTestComm>(world_rank, m_shm_comm);
     m_scheduler = geopm::make_unique<ProfileTestSampleScheduler>();
 
-    m_profile = geopm::make_unique<ProfileImp>(M_PROF_NAME, M_SHM_KEY, std::move(m_world_comm),
+    m_profile = geopm::make_unique<ProfileImp>(M_PROF_NAME, M_SHM_KEY, M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+                                               std::move(m_world_comm),
                                                std::move(m_ctl_msg), m_topo, std::move(m_table),
                                                std::move(m_tprof), std::move(m_scheduler), m_comm);
     EXPECT_EQ(M_NUM_CPU, m_profile->tprof_table()->num_cpu());
@@ -471,10 +524,13 @@ TEST_F(ProfileTestIntegration, config)
             auto tprof_shm = geopm::make_unique<SharedMemoryImp>(M_SHM_KEY + "-tprof", M_NUM_CPU * 64);
             std::string table_shm_key = M_SHM_KEY + "-sample-" + std::to_string(world_rank);
             auto table_shm = geopm::make_unique<SharedMemoryImp>(table_shm_key, M_SHMEM_REGION_SIZE);
-            m_profile = geopm::make_unique<ProfileImp>(M_PROF_NAME, M_SHM_KEY, std::move(m_world_comm),
+            m_profile = geopm::make_unique<ProfileImp>(M_PROF_NAME, M_SHM_KEY, M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+                                                       std::move(m_world_comm),
                                                        std::move(m_ctl_msg), m_topo, nullptr, nullptr, nullptr, m_comm);
-            tprof_shm.reset();
+            table_shm->unlink();
+            tprof_shm->unlink();
             table_shm.reset();
+            tprof_shm.reset();
         }
     }
 }
@@ -487,15 +543,18 @@ TEST_F(ProfileTestIntegration, misconfig_ctl_shmem)
     m_world_comm = geopm::make_unique<ProfileTestComm>(world_rank, m_shm_comm);
 
     // no ctl_shmem
-    ProfileImp(M_PROF_NAME, M_SHM_KEY, std::move(m_world_comm),
+    ProfileImp(M_PROF_NAME, M_SHM_KEY, M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+               std::move(m_world_comm),
                nullptr, m_topo, nullptr, nullptr, nullptr, m_comm);
 
     // small ctl_shmem
     m_shm_comm = std::make_shared<ProfileTestComm>(shm_rank, M_SHM_COMM_SIZE);
     m_world_comm = geopm::make_unique<ProfileTestComm>(world_rank, m_shm_comm);
     auto ctl_shm = geopm::make_unique<SharedMemoryImp>(M_SHM_KEY + "-sample", 1);
-    ProfileImp(M_PROF_NAME, M_SHM_KEY, std::move(m_world_comm),
+    ProfileImp(M_PROF_NAME, M_SHM_KEY, M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+               std::move(m_world_comm),
                nullptr, m_topo, nullptr, nullptr, nullptr, m_comm);
+    ctl_shm->unlink();
 }
 
 TEST_F(ProfileTestIntegration, misconfig_tprof_shmem)
@@ -507,7 +566,8 @@ TEST_F(ProfileTestIntegration, misconfig_tprof_shmem)
     m_world_comm = geopm::make_unique<ProfileTestComm>(world_rank, m_shm_comm);
 
     // no tprof_shmem
-    ProfileImp(M_PROF_NAME, M_SHM_KEY, std::move(m_world_comm),
+    ProfileImp(M_PROF_NAME, M_SHM_KEY, M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+               std::move(m_world_comm),
                std::move(m_ctl_msg), m_topo, nullptr, nullptr, nullptr, m_comm);
 
     m_ctl_msg = geopm::make_unique<ProfileTestControlMessage>();
@@ -516,8 +576,10 @@ TEST_F(ProfileTestIntegration, misconfig_tprof_shmem)
 
     // small tprof_shmem
     auto tprof_shm = geopm::make_unique<SharedMemoryImp>(M_SHM_KEY + "-tprof", (M_NUM_CPU * 64) - 1);
-    ProfileImp(M_PROF_NAME, M_SHM_KEY, std::move(m_world_comm),
+    ProfileImp(M_PROF_NAME, M_SHM_KEY, M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+               std::move(m_world_comm),
                std::move(m_ctl_msg), m_topo, nullptr, nullptr, nullptr, m_comm);
+    tprof_shm->unlink();
 }
 
 TEST_F(ProfileTestIntegration, misconfig_table_shmem)
@@ -530,7 +592,8 @@ TEST_F(ProfileTestIntegration, misconfig_table_shmem)
     m_tprof = geopm::make_unique<ProfileTestProfileThreadTable>(M_NUM_CPU);
 
     // no table_shmem
-    ProfileImp(M_PROF_NAME, M_SHM_KEY, std::move(m_world_comm),
+    ProfileImp(M_PROF_NAME, M_SHM_KEY, M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+               std::move(m_world_comm),
                std::move(m_ctl_msg), m_topo, nullptr, std::move(m_tprof), nullptr, m_comm);
 
     m_ctl_msg = geopm::make_unique<ProfileTestControlMessage>();
@@ -541,15 +604,17 @@ TEST_F(ProfileTestIntegration, misconfig_table_shmem)
     auto table_shm = geopm::make_unique<SharedMemoryImp>(table_shm_key, 1);
 
     // small table_shmem
-    ProfileImp(M_PROF_NAME, M_SHM_KEY, std::move(m_world_comm),
+    ProfileImp(M_PROF_NAME, M_SHM_KEY, M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+               std::move(m_world_comm),
                std::move(m_ctl_msg), m_topo, nullptr, std::move(m_tprof), nullptr, m_comm);
+
+    table_shm->unlink();
 }
 
 TEST_F(ProfileTestIntegration, misconfig_affinity)
 {
     int world_rank = 0;
     int shm_rank = 0;
-    geopm_env_load();
     m_ctl_msg = geopm::make_unique<ProfileTestControlMessage>();
     EXPECT_CALL(*m_ctl_msg, cpu_rank(testing::_))
         .WillRepeatedly(testing::Return(-2));
@@ -560,6 +625,37 @@ TEST_F(ProfileTestIntegration, misconfig_affinity)
     auto tprof_shm = geopm::make_unique<SharedMemoryImp>(M_SHM_KEY + "-tprof", M_NUM_CPU * 64);
     std::string table_shm_key = M_SHM_KEY + "-sample-" + std::to_string(world_rank);
     auto table_shm = geopm::make_unique<SharedMemoryImp>(table_shm_key, M_SHMEM_REGION_SIZE);
-    ProfileImp(M_PROF_NAME, M_SHM_KEY, std::move(m_world_comm),
+    ProfileImp(M_PROF_NAME, M_SHM_KEY, M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+               std::move(m_world_comm),
                std::move(m_ctl_msg), m_topo, nullptr, nullptr, nullptr, m_comm);
+    table_shm->unlink();
+    tprof_shm->unlink();
+    ctl_shm->unlink();
+}
+
+void ProfileTestIntegration::test_all_cpus_are_assigned_a_rank(size_t cpu_count, size_t cpu_set_size)
+{
+    const int world_rank = 0;
+    const int shm_rank = 0;
+    ProfileTestPlatformTopo test_topo(cpu_set_size);
+    m_shm_comm = std::make_shared<ProfileTestComm>(shm_rank, M_SHM_COMM_SIZE);
+    m_world_comm = geopm::make_unique<ProfileTestComm>(world_rank, m_shm_comm);
+    m_ctl_msg = geopm::make_unique<ProfileTestControlMessage>();
+    EXPECT_CALL(*m_ctl_msg, cpu_rank(testing::_, world_rank)).Times(cpu_count);
+    ProfileImp(M_PROF_NAME, M_SHM_KEY, M_REPORT, M_TIMEOUT, M_DO_REGION_BARRIER,
+               std::move(m_world_comm), std::move(m_ctl_msg), test_topo,
+               nullptr, nullptr, nullptr, m_comm);
+}
+
+TEST_F(ProfileTestIntegration, cpu_set_size)
+{
+    size_t configured_cpu_count = num_configured_cpus();
+    size_t affinitized_cpu_count = num_affinitized_cpus();
+
+    // Test that all allowed CPUs have been assigned a rank.
+    test_all_cpus_are_assigned_a_rank(affinitized_cpu_count, configured_cpu_count);
+
+    // Test again with a larger cpuset size to demonstrate that the cpu_rank
+    // calls don't simply happen once per allocated set entry.
+    test_all_cpus_are_assigned_a_rank(affinitized_cpu_count, configured_cpu_count + 32);
 }

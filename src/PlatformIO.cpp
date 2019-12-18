@@ -80,7 +80,7 @@ namespace geopm
                 }
                 catch (const geopm::Exception &ex) {
 #ifdef GEOPM_DEBUG
-                    std::cerr << "<geopm> Warning: failed to load " << it << " IOGroup.  "
+                    std::cerr << "Warning: <geopm> Failed to load " << it << " IOGroup.  "
                               << "GEOPM may not work properly unless an alternate "
                               << "IOGroup plugin is loaded to provide signals/controls "
                               << "required by the Controller and Agent."
@@ -137,7 +137,8 @@ namespace geopm
         /// @todo better handling for signals provided by PlatformIOImp
         /// These depend on ENERGY signals and should not be available
         /// if ENERGY_PACKAGE and ENERGY_DRAM are not available.
-        std::set<std::string> result {"POWER_PACKAGE", "POWER_DRAM"};
+        std::set<std::string> result {"POWER_PACKAGE", "POWER_DRAM",
+                                      "TEMPERATURE_CORE", "TEMPERATURE_PACKAGE"};
         for (const auto &io_group : m_iogroup_list) {
             auto names = io_group->signal_names();
             result.insert(names.begin(), names.end());
@@ -628,17 +629,41 @@ namespace geopm
 
     std::function<double(const std::vector<double> &)> PlatformIOImp::agg_function(const std::string &signal_name) const
     {
-        // Special signals from PlatformIOImp
-        /// @todo: find a better way to track signals produced by PlatformIOImp itself
-        if (signal_name == "POWER_PACKAGE" || signal_name == "POWER_DRAM") {
-            return Agg::sum;
-        }
+        // Special signals from PlatformIOImp are aggregated by underlying signals
         auto iogroup = find_signal_iogroup(signal_name);
         if (iogroup == nullptr) {
             throw Exception("PlatformIOImp::agg_function(): unknown how to aggregate \"" + signal_name + "\"",
                             GEOPM_ERROR_INVALID, __FILE__, __LINE__);
         }
         return iogroup->agg_function(signal_name);
+    }
+
+    std::function<std::string(double)> PlatformIOImp::format_function(const std::string &signal_name) const
+    {
+        std::function<std::string(double)> result;
+        /// @todo: find a better way to track signals produced by PlatformIOImp itself
+        if (signal_name == "POWER_PACKAGE") {
+            result = string_format_double;
+        }
+        else if (signal_name == "POWER_DRAM") {
+            result = string_format_double;
+        }
+        else if (signal_name == "TEMPERATURE_CORE") {
+            result = string_format_double;
+        }
+        else if (signal_name == "TEMPERATURE_PACKAGE") {
+            result = string_format_double;
+        }
+        else {
+            // PlatformIOImp forwards formatting request to underlying IOGroup
+            auto iogroup = find_signal_iogroup(signal_name);
+            if (iogroup == nullptr) {
+               throw Exception("PlatformIOImp::format_function(): unknown how to format \"" + signal_name + "\"",
+                               GEOPM_ERROR_INVALID, __FILE__, __LINE__);
+            }
+            result = iogroup->format_function(signal_name);
+        }
+        return result;
     }
 
     std::string PlatformIOImp::signal_description(const std::string &signal_name) const
@@ -649,6 +674,12 @@ namespace geopm
         }
         else if (signal_name == "POWER_DRAM") {
             return "Average DRAM power in watts over the last 8 samples (usually 40 ms).";
+        }
+        else if (signal_name == "TEMPERATURE_CORE") {
+            return "Core temperaure in degrees C";
+        }
+        else if (signal_name == "TEMPERATURE_PACKAGE") {
+            return "Package temperature in degrees C";
         }
         auto iogroup = find_signal_iogroup(signal_name);
         if (iogroup == nullptr) {

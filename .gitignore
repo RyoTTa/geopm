@@ -82,8 +82,8 @@
 /m4/lt~obsolete.m4
 /man/*
 /missing
-/openmp-4.0.0.src.tar.xz
-/openmp-4.0.0.src/*
+/openmp-*.src.tar.xz
+/openmp-*.src/*
 /openmp/*
 /plugin/*.lo
 /plugin/*.o
@@ -140,6 +140,7 @@
 /test_integration/*.trace*
 /test_integration/geopm_test_integration
 /test_integration/geopm_test_integration.pyc
+/test_integration/test_ee_stream_dgemm_mix
 /tutorial/*.o
 /tutorial/Exception.hpp
 /tutorial/agent/*.so.*

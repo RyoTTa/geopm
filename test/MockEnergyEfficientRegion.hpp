@@ -30,24 +30,22 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef MOCKMANAGERIOSAMPLER_HPP_INCLUDE
-#define MOCKMANAGERIOSAMPLER_HPP_INCLUDE
+#ifndef MOCKENERGYEFFICIENTREGION_HPP_INCLUDE
+#define MOCKENERGYEFFICIENTREGION_HPP_INCLUDE
 
-#include "ManagerIO.hpp"
+#include "EnergyEfficientRegion.hpp"
 
-class MockManagerIOSampler : public geopm::ManagerIOSampler
+class MockEnergyEfficientRegion : public geopm::EnergyEfficientRegion
 {
     public:
-        MOCK_METHOD0(read_batch,
-                     void(void));
-        MOCK_CONST_METHOD1(sample,
-                     double(const std::string &signal_name));
-        MOCK_CONST_METHOD0(sample,
-                     std::vector<double>(void));
-        MOCK_METHOD0(is_update_available,
+        MOCK_CONST_METHOD0(freq, double(void));
+        MOCK_METHOD3(update_freq_range,
+                     void(double freq_min, double freq_max, double freq_step));
+        MOCK_METHOD1(update_exit,
+                     void(double curr_perf_metric));
+        MOCK_METHOD0(disable, void(void));
+        MOCK_CONST_METHOD0(is_learning,
                      bool(void));
-        MOCK_CONST_METHOD0(signal_names,
-                     std::vector<std::string>(void));
 };
 
 #endif

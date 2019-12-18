@@ -34,6 +34,7 @@
 #include <memory>
 #include <sstream>
 #include <list>
+#include <set>
 
 #include "gtest/gtest.h"
 #include "gmock/gmock.h"
@@ -44,7 +45,7 @@
 #include "MockPlatformIO.hpp"
 #include "MockComm.hpp"
 #include "MockApplicationIO.hpp"
-#include "MockManagerIOSampler.hpp"
+#include "MockEndpointUser.hpp"
 #include "MockAgent.hpp"
 #include "MockTreeComm.hpp"
 #include "MockReporter.hpp"
@@ -62,6 +63,7 @@ using testing::_;
 using testing::Return;
 using testing::AtLeast;
 using testing::ContainerEq;
+using testing::SetArgReferee;
 
 class ControllerTestMockPlatformIO : public MockPlatformIO
 {
@@ -77,13 +79,16 @@ class ControllerTestMockPlatformIO : public MockPlatformIO
             ON_CALL(*this, sample(-1))
                 .WillByDefault(Return(NAN));
         }
-        void add_supported_signal(PlatformIO::m_request_s signal, double default_value)
+        void add_supported_signal(const std::string &signal_name,
+                                  int signal_domain_type,
+                                  int signal_domain_idx,
+                                  double default_value)
         {
-            ON_CALL(*this, push_signal(signal.name, signal.domain_type, signal.domain_idx))
+            ON_CALL(*this, push_signal(signal_name, signal_domain_type, signal_domain_idx))
                 .WillByDefault(Return(m_index));
             ON_CALL(*this, sample(m_index))
                 .WillByDefault(Return(default_value));
-            ON_CALL(*this, read_signal(signal.name, signal.domain_type, signal.domain_idx))
+            ON_CALL(*this, read_signal(signal_name, signal_domain_type, signal_domain_idx))
                 .WillByDefault(Return(default_value));
             ++m_index;
         }
@@ -92,7 +97,41 @@ class ControllerTestMockPlatformIO : public MockPlatformIO
         int m_index = 0;
 };
 
+class ControllerTestMockComm : public MockComm
+{
+    public:
+        ControllerTestMockComm(const std::set<std::string> &hostnames);
+        int num_rank(void) const override;
+        void gather(const void *send_buf, size_t send_size, void *recv_buf,
+                    size_t recv_size, int root) const override;
+    private:
+        std::set<std::string> m_hostlist;
+};
 
+ControllerTestMockComm::ControllerTestMockComm(const std::set<std::string> &hostnames)
+    : m_hostlist(hostnames)
+{
+
+}
+
+int ControllerTestMockComm::num_rank(void) const
+{
+    return m_hostlist.size();
+}
+
+void ControllerTestMockComm::gather(const void *send_buf, size_t send_size, void *recv_buf,
+                                    size_t recv_size, int root) const
+{
+    std::string sent_host((char*)send_buf);
+    if (std::find(m_hostlist.begin(), m_hostlist.end(), sent_host) == m_hostlist.end()) {
+        FAIL() << "Controller did not send own host.";
+    }
+    int rank_offset = 0;
+    for (auto host : m_hostlist) {
+        strncpy((char*)recv_buf + rank_offset, host.c_str(), recv_size);
+        rank_offset += recv_size;
+    }
+}
 
 class ControllerTest : public ::testing::Test
 {
@@ -110,7 +149,7 @@ class ControllerTest : public ::testing::Test
         MockTracer *m_tracer;
         std::vector<MockAgent*> m_level_agent;
         std::vector<std::unique_ptr<Agent> > m_agents;
-        MockManagerIOSampler *m_manager_io;
+        MockEndpointUser *m_endpoint;
 
         int m_num_step = 3;
         std::list<geopm_region_info_s> m_region_info;
@@ -120,20 +159,63 @@ class ControllerTest : public ::testing::Test
 
 void ControllerTest::SetUp()
 {
-    m_platform_io.add_supported_signal({"TIME", GEOPM_DOMAIN_BOARD, 0}, 99);
-    m_platform_io.add_supported_signal({"POWER_PACKAGE", GEOPM_DOMAIN_BOARD, 0}, 4545);
-    m_platform_io.add_supported_signal({"FREQUENCY", GEOPM_DOMAIN_BOARD, 0}, 333);
-    m_platform_io.add_supported_signal({"REGION_PROGRESS", GEOPM_DOMAIN_BOARD, 0}, 0.5);
+    m_platform_io.add_supported_signal("TIME", GEOPM_DOMAIN_BOARD, 0, 99);
+    m_platform_io.add_supported_signal("POWER_PACKAGE", GEOPM_DOMAIN_BOARD, 0, 4545);
+    m_platform_io.add_supported_signal("FREQUENCY", GEOPM_DOMAIN_BOARD, 0, 333);
+    m_platform_io.add_supported_signal("REGION_PROGRESS", GEOPM_DOMAIN_BOARD, 0, 0.5);
 
     m_comm = std::make_shared<MockComm>();
     m_application_io = std::make_shared<MockApplicationIO>();
     m_tree_comm = new MockTreeComm();
-    m_manager_io = new MockManagerIOSampler();
+    m_endpoint = new MockEndpointUser();
     m_reporter = new MockReporter();
     m_tracer = new MockTracer();
 
     // called during clean up
     EXPECT_CALL(m_platform_io, restore_control());
+}
+
+TEST_F(ControllerTest, get_hostnames)
+{
+    int num_level_ctl = 2;
+    int root_level = 2;
+    std::vector<int> fan_out = {2, 2};
+    ASSERT_EQ(root_level, (int)fan_out.size());
+
+    EXPECT_CALL(*m_tree_comm, num_level_controlled())
+        .WillOnce(Return(num_level_ctl));
+    EXPECT_CALL(*m_tree_comm, root_level())
+        .WillOnce(Return(root_level));
+    for (int level = 0; level < num_level_ctl; ++level) {
+        EXPECT_CALL(*m_tree_comm, level_size(level)).WillOnce(Return(fan_out[level]));
+    }
+    for (int level = 0; level < num_level_ctl + 1; ++level) {
+        auto tmp = new MockAgent();
+        EXPECT_CALL(*tmp, init(level, fan_out, true));
+        tmp->init(level, fan_out, true);
+        m_level_agent.push_back(tmp);
+
+        m_agents.emplace_back(m_level_agent[level]);
+    }
+    ASSERT_EQ(3u, m_level_agent.size());
+
+    std::set<std::string> multi_node_list = {"node4", "node6", "node8", "node9"};
+    auto multi_node_comm = std::make_shared<ControllerTestMockComm>(multi_node_list);
+
+    Controller controller(multi_node_comm, m_platform_io,
+                          m_agent_name, m_num_send_down, m_num_send_up,
+                          std::unique_ptr<MockTreeComm>(m_tree_comm),
+                          m_application_io,
+                          std::unique_ptr<MockReporter>(m_reporter),
+                          std::unique_ptr<MockTracer>(m_tracer),
+                          std::move(m_agents),
+                          {},
+                          std::unique_ptr<MockEndpointUser>(m_endpoint),
+                          "/test_policy");
+
+    EXPECT_CALL(*multi_node_comm, rank());
+    std::set<std::string> result = controller.get_hostnames("node4");
+    EXPECT_EQ(multi_node_list, result);
 }
 
 TEST_F(ControllerTest, single_node)
@@ -155,12 +237,18 @@ TEST_F(ControllerTest, single_node)
                           std::unique_ptr<MockReporter>(m_reporter),
                           std::unique_ptr<MockTracer>(m_tracer),
                           std::move(m_agents),
-                          std::unique_ptr<MockManagerIOSampler>(m_manager_io));
+                          {},
+                          std::unique_ptr<MockEndpointUser>(m_endpoint),
+                          "/test_policy");
 
     // setup trace
     std::vector<std::string> trace_names = {"COL1", "COL2"};
+    std::vector<std::function<std::string(double)> > trace_formats = {
+        geopm::string_format_double, geopm::string_format_float
+    };
     EXPECT_CALL(*agent, trace_names()).WillOnce(Return(trace_names));
-    EXPECT_CALL(*m_tracer, columns(_));
+    EXPECT_CALL(*agent, trace_formats()).WillOnce(Return(trace_formats));
+    EXPECT_CALL(*m_tracer, columns(_, _));
     controller.setup_trace();
 
     // step
@@ -170,19 +258,21 @@ TEST_F(ControllerTest, single_node)
     EXPECT_CALL(*m_application_io, region_info()).Times(m_num_step)
         .WillRepeatedly(Return(m_region_info));
     EXPECT_CALL(*m_application_io, clear_region_info()).Times(m_num_step);
-    std::vector<double> manager_sample = {8.8, 9.9};
-    ASSERT_EQ(m_num_send_down, (int)manager_sample.size());
-    EXPECT_CALL(*m_manager_io, sample()).Times(m_num_step)
-        .WillRepeatedly(Return(manager_sample));
+    std::vector<double> endpoint_policy = {8.8, 9.9};
+    ASSERT_EQ(m_num_send_down, (int)endpoint_policy.size());
+    EXPECT_CALL(*m_endpoint, read_policy(_)).Times(m_num_step)
+        .WillRepeatedly(DoAll(SetArgReferee<0>(endpoint_policy), Return(0)));
     EXPECT_CALL(*m_reporter, update()).Times(m_num_step);
     EXPECT_CALL(*m_tracer, update(_, _)).Times(m_num_step);
     EXPECT_CALL(*agent, trace_values(_)).Times(m_num_step);
+    EXPECT_CALL(*agent, validate_policy(_)).Times(m_num_step);
     EXPECT_CALL(*agent, adjust_platform(_)).Times(m_num_step);
     EXPECT_CALL(*agent, do_write_batch())
         .WillRepeatedly(Return(true));
     EXPECT_CALL(*agent, sample_platform(_)).Times(m_num_step);
     EXPECT_CALL(*agent, do_send_sample()).Times(m_num_step)
         .WillRepeatedly(Return(true));
+    EXPECT_CALL(*m_endpoint, write_sample(_)).Times(m_num_step);
     EXPECT_CALL(*agent, wait()).Times(m_num_step);
     // should not call aggregate_sample/split_policy
     EXPECT_CALL(*agent, aggregate_sample(_, _)).Times(0);
@@ -225,11 +315,17 @@ TEST_F(ControllerTest, two_level_controller_1)
                           std::unique_ptr<MockReporter>(m_reporter),
                           std::unique_ptr<MockTracer>(m_tracer),
                           std::move(m_agents),
-                          std::unique_ptr<MockManagerIOSampler>(m_manager_io));
+                          {},
+                          std::unique_ptr<MockEndpointUser>(m_endpoint),
+                          "/test_policy");
 
     std::vector<std::string> trace_names = {"COL1", "COL2"};
+    std::vector<std::function<std::string(double)> > trace_formats = {
+        geopm::string_format_double, geopm::string_format_float
+    };
     EXPECT_CALL(*agent, trace_names()).WillOnce(Return(trace_names));
-    EXPECT_CALL(*m_tracer, columns(_));
+    EXPECT_CALL(*agent, trace_formats()).WillOnce(Return(trace_formats));
+    EXPECT_CALL(*m_tracer, columns(_, _));
     controller.setup_trace();
 
     // mock parent sending to this child
@@ -237,8 +333,9 @@ TEST_F(ControllerTest, two_level_controller_1)
     m_tree_comm->send_down(num_level_ctl, policy);
     m_tree_comm->reset_spy();
 
-    // should not interact with manager io
-    EXPECT_CALL(*m_manager_io, sample()).Times(0);
+    // should not interact with endpoint
+    EXPECT_CALL(*m_endpoint, read_policy(_)).Times(0);
+    EXPECT_CALL(*m_endpoint, write_sample(_)).Times(0);
 
     EXPECT_CALL(m_platform_io, read_batch()).Times(m_num_step);
     EXPECT_CALL(m_platform_io, write_batch()).Times(m_num_step);
@@ -249,6 +346,7 @@ TEST_F(ControllerTest, two_level_controller_1)
     EXPECT_CALL(*m_reporter, update()).Times(m_num_step);
     EXPECT_CALL(*m_tracer, update(_, _)).Times(m_num_step);
     EXPECT_CALL(*agent, trace_values(_)).Times(m_num_step);
+    EXPECT_CALL(*agent, validate_policy(_)).Times(m_num_step);
     EXPECT_CALL(*agent, adjust_platform(_)).Times(m_num_step);
     EXPECT_CALL(*agent, do_write_batch())
         .WillRepeatedly(Return(true));
@@ -315,11 +413,17 @@ TEST_F(ControllerTest, two_level_controller_2)
                           std::unique_ptr<MockReporter>(m_reporter),
                           std::unique_ptr<MockTracer>(m_tracer),
                           std::move(m_agents),
-                          std::unique_ptr<MockManagerIOSampler>(m_manager_io));
+                          {},
+                          std::unique_ptr<MockEndpointUser>(m_endpoint),
+                          "/test_policy");
 
     std::vector<std::string> trace_names = {"COL1", "COL2"};
+    std::vector<std::function<std::string(double)> > trace_formats = {
+        geopm::string_format_double, geopm::string_format_float
+    };
     EXPECT_CALL(*m_level_agent[0], trace_names()).WillOnce(Return(trace_names));
-    EXPECT_CALL(*m_tracer, columns(_));
+    EXPECT_CALL(*m_level_agent[0], trace_formats()).WillOnce(Return(trace_formats));
+    EXPECT_CALL(*m_tracer, columns(_, _));
     controller.setup_trace();
 
     // mock parent sending to this child
@@ -327,8 +431,9 @@ TEST_F(ControllerTest, two_level_controller_2)
     m_tree_comm->send_down(num_level_ctl, policy);
     m_tree_comm->reset_spy();
 
-    // should not interact with manager io
-    EXPECT_CALL(*m_manager_io, sample()).Times(0);
+    // should not interact with endpoint
+    EXPECT_CALL(*m_endpoint, read_policy(_)).Times(0);
+    EXPECT_CALL(*m_endpoint, write_sample(_)).Times(0);
 
     EXPECT_CALL(m_platform_io, read_batch()).Times(m_num_step);
     EXPECT_CALL(*m_application_io, update(_)).Times(m_num_step);
@@ -338,6 +443,11 @@ TEST_F(ControllerTest, two_level_controller_2)
     EXPECT_CALL(*m_reporter, update()).Times(m_num_step);
     EXPECT_CALL(*m_tracer, update(_, _)).Times(m_num_step);
     EXPECT_CALL(*m_level_agent[0], trace_values(_)).Times(m_num_step);
+    EXPECT_CALL(*m_level_agent[0], validate_policy(_)).Times(m_num_step);
+    EXPECT_CALL(*m_level_agent[0], adjust_platform(_)).Times(m_num_step);
+    EXPECT_CALL(*m_level_agent[0], do_write_batch())
+        .WillRepeatedly(Return(true));
+    EXPECT_CALL(m_platform_io, write_batch()).Times(m_num_step);
     EXPECT_CALL(*m_level_agent[0], sample_platform(_)).Times(m_num_step);
     EXPECT_CALL(*m_level_agent[0], do_send_sample()).Times(m_num_step)
         .WillRepeatedly(Return(true));
@@ -346,6 +456,7 @@ TEST_F(ControllerTest, two_level_controller_2)
     EXPECT_CALL(*m_level_agent[0], aggregate_sample(_, _)).Times(0);
     EXPECT_CALL(*m_level_agent[0], split_policy(_, _)).Times(0);
 
+    EXPECT_CALL(*m_level_agent[1], validate_policy(_)).Times(m_num_step);
     EXPECT_CALL(*m_level_agent[1], split_policy(_, _)).Times(m_num_step);
     EXPECT_CALL(*m_level_agent[1], do_send_policy())
         .WillRepeatedly(Return(true));
@@ -409,11 +520,17 @@ TEST_F(ControllerTest, two_level_controller_0)
                           std::unique_ptr<MockReporter>(m_reporter),
                           std::unique_ptr<MockTracer>(m_tracer),
                           std::move(m_agents),
-                          std::unique_ptr<MockManagerIOSampler>(m_manager_io));
+                          {},
+                          std::unique_ptr<MockEndpointUser>(m_endpoint),
+                          "/test_policy");
 
     std::vector<std::string> trace_names = {"COL1", "COL2"};
+    std::vector<std::function<std::string(double)> > trace_formats = {
+        geopm::string_format_double, geopm::string_format_float
+    };
     EXPECT_CALL(*m_level_agent[0], trace_names()).WillOnce(Return(trace_names));
-    EXPECT_CALL(*m_tracer, columns(_));
+    EXPECT_CALL(*m_level_agent[0], trace_formats()).WillOnce(Return(trace_formats));
+    EXPECT_CALL(*m_tracer, columns(_, _));
     controller.setup_trace();
 
     EXPECT_CALL(m_platform_io, read_batch()).Times(m_num_step);
@@ -421,13 +538,18 @@ TEST_F(ControllerTest, two_level_controller_0)
     EXPECT_CALL(*m_application_io, region_info()).Times(m_num_step)
         .WillRepeatedly(Return(m_region_info));
     EXPECT_CALL(*m_application_io, clear_region_info()).Times(m_num_step);
-    std::vector<double> manager_sample = {8.8, 9.9};
-    ASSERT_EQ(m_num_send_down, (int)manager_sample.size());
-    EXPECT_CALL(*m_manager_io, sample()).Times(m_num_step)
-        .WillRepeatedly(Return(manager_sample));
+    std::vector<double> endpoint_policy = {8.8, 9.9};
+    ASSERT_EQ(m_num_send_down, (int)endpoint_policy.size());
+    EXPECT_CALL(*m_endpoint, read_policy(_)).Times(m_num_step)
+        .WillRepeatedly(DoAll(SetArgReferee<0>(endpoint_policy), Return(0)));
     EXPECT_CALL(*m_reporter, update()).Times(m_num_step);
     EXPECT_CALL(*m_tracer, update(_, _)).Times(m_num_step);
     EXPECT_CALL(*m_level_agent[0], trace_values(_)).Times(m_num_step);
+    EXPECT_CALL(*m_level_agent[0], validate_policy(_)).Times(m_num_step);
+    EXPECT_CALL(*m_level_agent[0], adjust_platform(_)).Times(m_num_step);
+    EXPECT_CALL(*m_level_agent[0], do_write_batch())
+        .WillRepeatedly(Return(true));
+    EXPECT_CALL(m_platform_io, write_batch()).Times(m_num_step);
     EXPECT_CALL(*m_level_agent[0], sample_platform(_)).Times(m_num_step);
     EXPECT_CALL(*m_level_agent[0], do_send_sample()).Times(m_num_step)
         .WillRepeatedly(Return(true));
@@ -436,9 +558,11 @@ TEST_F(ControllerTest, two_level_controller_0)
     EXPECT_CALL(*m_level_agent[0], aggregate_sample(_, _)).Times(0);
     EXPECT_CALL(*m_level_agent[0], split_policy(_, _)).Times(0);
 
+    EXPECT_CALL(*m_level_agent[2], validate_policy(_)).Times(m_num_step);
     EXPECT_CALL(*m_level_agent[2], split_policy(_, _)).Times(m_num_step);
     EXPECT_CALL(*m_level_agent[2], do_send_policy())
         .WillRepeatedly(Return(true));
+    EXPECT_CALL(*m_level_agent[1], validate_policy(_)).Times(m_num_step);
     EXPECT_CALL(*m_level_agent[1], split_policy(_, _)).Times(m_num_step);
     EXPECT_CALL(*m_level_agent[1], do_send_policy())
         .WillRepeatedly(Return(true));
@@ -448,6 +572,7 @@ TEST_F(ControllerTest, two_level_controller_0)
     EXPECT_CALL(*m_level_agent[2], aggregate_sample(_, _)).Times(m_num_step);
     EXPECT_CALL(*m_level_agent[2], do_send_sample())
         .WillRepeatedly(Return(true));
+    EXPECT_CALL(*m_endpoint, write_sample(_)).Times(m_num_step);
 
     for (int step = 0; step < m_num_step; ++step) {
         controller.step();

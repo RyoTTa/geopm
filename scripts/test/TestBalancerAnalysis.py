@@ -31,9 +31,13 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+from __future__ import absolute_import
+from __future__ import division
+
 import os
 import unittest
-from analysis_helper import *
+from test.analysis_helper import *
+from test import mock_report
 
 
 @unittest.skipIf(g_skip_analysis_test, g_skip_analysis_ex)
@@ -45,6 +49,7 @@ class TestBalancerAnalysis(unittest.TestCase):
         self._max_power = 200
         self._step_power = 10
         self._powers = range(self._min_power, self._max_power+self._step_power, self._step_power)
+        self._node_names = ['mynode']
         self._config = {'profile_prefix': self._name_prefix,
                         'output_dir': '.',
                         'verbose': True,
@@ -53,20 +58,29 @@ class TestBalancerAnalysis(unittest.TestCase):
                         'step_power': self._step_power}
         self._tmp_files = []
         # default mocked data for each column given power budget and agent
-        self._agent_factor = {
-            'power_governor': 1.0,
-            'power_balancer': 0.9,
+        self._gen_val_governor = {
+            'count': (lambda node, region, pow: 1),
+            'energy_pkg': (lambda node, region, pow: (14000.0 + pow)),
+            'energy_dram': (lambda node, region, pow: 2000.0),
+            'frequency': (lambda node, region, pow: 1.0e9 + (self._max_power/float(pow))*1.0e9),
+            'mpi_runtime': (lambda node, region, pow: 10),
+            'runtime': (lambda node, region, pow: (500.0 * (1.0/pow))),
+            'id': (lambda node, region, pow: 'bad'),
+            'power': (lambda node, region, pow:
+                self._gen_val_governor['energy_pkg'](node, region, pow) /
+                self._gen_val_governor['runtime'](node, region, pow)),
         }
-        self._gen_val = {
-            'count': (lambda pow, agent: 1),
-            'energy_pkg': (lambda pow, agent: (14000.0 + pow) * self._agent_factor[agent]),
-            'energy_dram': (lambda pow, agent: 2000.0),
-            'frequency': (lambda pow, agent: 1.0e9 + (self._max_power/float(pow))*1.0e9),
-            'mpi_runtime': (lambda pow, agent: 10),
-            'runtime': (lambda pow, agent: (500.0 * (1.0/pow)) * self._agent_factor[agent]),
-            'id': (lambda pow, agent: 'bad'),
-            'power': (lambda pow, agent: self._gen_val['energy_pkg'](pow, agent) / self._gen_val['runtime'](pow, agent)),
-        }
+        self._gen_val_balancer = self._gen_val_governor.copy()
+        for metric in ['energy_pkg', 'runtime']:
+            self._gen_val_balancer[metric] = lambda node, region, power: (
+                self._gen_val_governor[metric](node, region, power) * 0.9)
+        self._gen_val_balancer['power'] = lambda node, region, power: (
+                self._gen_val_balancer['energy_pkg'](node, region, power) /
+                self._gen_val_balancer['runtime'](node, region, power) )
+
+        self._agent_params = {
+                'power_governor': (self._gen_val_governor, self._powers),
+                'power_balancer': (self._gen_val_balancer, self._powers) }
 
     def tearDown(self):
         for ff in self._tmp_files:
@@ -75,50 +89,18 @@ class TestBalancerAnalysis(unittest.TestCase):
             except OSError:
                 pass
 
-    def make_mock_report_df(self):
-        # for input data frame
-        version = '0.3.0'
-        node_name = 'mynode'
-        region_id = {
-            'epoch':  '9223372036854775808',
-            'dgemm':  '11396693813',
-            'stream': '20779751936'
-        }
-        index_names = ['version', 'start_time', 'name', 'agent', 'node_name', 'iteration', 'region']
-        numeric_cols = ['count', 'energy_pkg', 'energy_dram', 'frequency', 'mpi_runtime', 'runtime', 'id']
-        regions = ['epoch', 'dgemm', 'stream']
-        iterations = range(1, 4)
-        start_time = 'Tue Nov  6 08:00:00 2018'
-
-        input_data = {}
-        for col in numeric_cols:
-            input_data[col] = {}
-            for pp in self._powers:
-                prof_name = '{}_{}'.format(self._name_prefix, pp)
-                for it in iterations:
-                    for agent in ['power_governor', 'power_balancer']:
-                        for region in regions:
-                            self._gen_val['id'] = lambda pow, agent: region_id[region]
-                            index = (version, start_time, prof_name, agent, node_name, it, region)
-                            value = self._gen_val[col](pp, agent)
-                            input_data[col][index] = value
-
-        df = pandas.DataFrame.from_dict(input_data)
-        df.index.rename(index_names, inplace=True)
-        return df
-
     def make_expected_summary_df(self, metric):
         ref_val_cols = ['reference_mean', 'reference_max', 'reference_min']
         tar_val_cols = ['target_mean', 'target_max', 'target_min']
         delta_cols = ['reference_max_delta', 'reference_min_delta', 'target_max_delta', 'target_min_delta']
         cols = ref_val_cols + tar_val_cols + delta_cols
         expected_data = []
-        ref_agent = 'power_governor'
-        tar_agent = 'power_balancer'
         for pp in self._powers:
             row = []
-            row += [self._gen_val[metric](pp, ref_agent) for col in ref_val_cols]
-            row += [self._gen_val[metric](pp, tar_agent) for col in tar_val_cols]
+            # Reference metrics
+            row += [self._gen_val_governor[metric](None, None, pp) for col in ref_val_cols]
+            # Target metrics
+            row += [self._gen_val_balancer[metric](None, None, pp) for col in tar_val_cols]
             row += [0.0 for col in delta_cols]
             expected_data.append(row)
         index = pandas.Index(self._powers, name='name')
@@ -126,7 +108,8 @@ class TestBalancerAnalysis(unittest.TestCase):
 
     def test_balancer_plot_process_runtime(self):
         metric = 'runtime'
-        report_df = self.make_mock_report_df()
+        report_df = mock_report.make_mock_report_df(
+                self._name_prefix, self._node_names, self._agent_params)
         mock_parse_data = MockAppOutput(report_df)
         analysis = geopmpy.analysis.BalancerAnalysis(metric=metric, normalize=False, speedup=False,
                                                      **self._config)
@@ -136,7 +119,8 @@ class TestBalancerAnalysis(unittest.TestCase):
         compare_dataframe(self, expected_df, result)
 
     def test_balancer_plot_process_energy(self):
-        report_df = self.make_mock_report_df()
+        report_df = mock_report.make_mock_report_df(
+                self._name_prefix, self._node_names, self._agent_params)
         mock_parse_data = MockAppOutput(report_df)
         analysis = geopmpy.analysis.BalancerAnalysis(metric='energy', normalize=False, speedup=False,
                                                      **self._config)
@@ -147,7 +131,8 @@ class TestBalancerAnalysis(unittest.TestCase):
 
     def test_balancer_plot_process_power(self):
         metric = 'power'
-        report_df = self.make_mock_report_df()
+        report_df = mock_report.make_mock_report_df(
+                self._name_prefix, self._node_names, self._agent_params)
         mock_parse_data = MockAppOutput(report_df)
         analysis = geopmpy.analysis.BalancerAnalysis(metric=metric, normalize=False, speedup=False,
                                                      **self._config)

@@ -135,19 +135,12 @@ void FrequencyMapAgentTest::SetUp()
     ASSERT_EQ(m_mapped_freqs.size(), m_region_hash.size());
     ASSERT_EQ(m_mapped_freqs.size(), m_expected_freqs.size());
 
-    std::stringstream ss;
-    ss << "{";
+    std::map<uint64_t, double> frequency_map;
     for (size_t x = 0; x < M_NUM_REGIONS; x++) {
-        ss << "\"" << m_region_names[x] << "\": " << m_mapped_freqs[x];
-        if (x != M_NUM_REGIONS-1) {
-            ss << ", ";
-        }
+        frequency_map[m_region_hash[x]] = m_mapped_freqs[x];
     }
-    ss << "}";
 
-    setenv("GEOPM_FREQUENCY_MAP", ss.str().c_str(), 1);
-
-    m_agent = geopm::make_unique<FrequencyMapAgent>(*m_platform_io, *m_platform_topo, m_governor);
+    m_agent = geopm::make_unique<FrequencyMapAgent>(*m_platform_io, *m_platform_topo, m_governor, frequency_map);
     // todo: this test assumes board domain is used for control
     EXPECT_CALL(*m_governor, init_platform_io());
     EXPECT_CALL(*m_governor, frequency_domain_type());
@@ -156,7 +149,7 @@ void FrequencyMapAgentTest::SetUp()
 
 void FrequencyMapAgentTest::TearDown()
 {
-    unsetenv("GEOPM_FREQUENCY_MAP");
+
 }
 
 TEST_F(FrequencyMapAgentTest, map)
@@ -222,4 +215,17 @@ TEST_F(FrequencyMapAgentTest, hint)
         m_agent->adjust_platform(m_default_policy);
         EXPECT_TRUE(m_agent->do_write_batch());
     }
+}
+
+TEST_F(FrequencyMapAgentTest, enforce_policy)
+{
+    const double limit = 1e9;
+    const std::vector<double> policy{0, limit};
+    const std::vector<double> bad_policy{100, 200, 300};
+
+    EXPECT_CALL(*m_platform_io, write_control("FREQUENCY", GEOPM_DOMAIN_BOARD, 0, limit));
+
+    m_agent->enforce_policy(policy);
+
+    EXPECT_THROW(m_agent->enforce_policy(bad_policy), geopm::Exception);
 }

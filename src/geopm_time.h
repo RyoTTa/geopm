@@ -34,6 +34,7 @@
 
 #include <math.h>
 #include <errno.h>
+#include <string.h>
 
 #ifndef __cplusplus
 #include <stdbool.h>
@@ -51,31 +52,13 @@ static inline bool geopm_time_comp(const struct geopm_time_s *aa, const struct g
 static inline void geopm_time_add(const struct geopm_time_s *begin, double elapsed, struct geopm_time_s *end);
 static inline double geopm_time_since(const struct geopm_time_s *begin);
 
-#ifdef __linux__
 #include <time.h>
 
-/// @brief structure to abstract the difference between a timespec on linux or a timeval on OSX.
+/// @brief structure to abstract the timespec on linux from other
+///        representations of time.
 struct geopm_time_s {
     struct timespec t;
 };
-
-static inline int geopm_time_string(int buf_size, char *buf)
-{
-    struct tm tm;
-    struct timespec time;
-    int ret = clock_gettime(CLOCK_REALTIME, &time);
-    if (!ret) {
-        /// asctime_r takes a user allocated buffer and
-        /// requires the size to be at least 26 bytes.
-        if (buf_size >= 26) {
-            localtime_r(&time.tv_sec, &tm);
-            asctime_r(&tm, buf);
-        } else {
-            ret = EINVAL;
-        }
-    }
-    return ret;
-}
 
 static inline int geopm_time(struct geopm_time_s *time)
 {
@@ -109,61 +92,32 @@ static inline void geopm_time_add(const struct geopm_time_s *begin, double elaps
     }
 }
 
-#else
-#include <sys/time.h>
-
-/// @brief structure to abstract the difference between a timespec on linux or a timeval on OSX.
-struct geopm_time_s {
-    struct timeval t;
-};
+static inline int geopm_time_to_string(const struct geopm_time_s *time, int buf_size, char *buf)
+{
+    int err = 0;
+    struct tm tm;
+    struct geopm_time_s ref_time_real;
+    struct geopm_time_s ref_time_mono;
+    clock_gettime(CLOCK_REALTIME, &(ref_time_real.t));
+    clock_gettime(CLOCK_MONOTONIC_RAW, &(ref_time_mono.t));
+    time_t sec_since_1970 = geopm_time_diff(&ref_time_mono, &ref_time_real) + time->t.tv_sec;
+    localtime_r(&sec_since_1970, &tm);
+    size_t num_byte = strftime(buf, buf_size, "%a %b %d %H:%M:%S %Y", &tm);
+    if (!num_byte) {
+        err = EINVAL;
+    }
+    return err;
+}
 
 static inline int geopm_time_string(int buf_size, char *buf)
 {
-    struct tm tm;
-    struct timeval time;
-    int ret = gettimeofday(&time, NULL);
-    if (!ret) {
-        /// asctime_r takes a user allocated buffer and
-        /// requires the size to be at least 26 bytes.
-        if (buf_size >= 26) {
-            localtime_r(&time.tv_sec, &tm);
-            asctime_r(&tm, buf);
-        } else {
-            ret = EINVAL;
-        }
+    struct geopm_time_s time;
+    int err = geopm_time(&time);
+    if (!err) {
+        err = geopm_time_to_string(&time, buf_size, buf);
     }
-    return ret;
+    return err;
 }
-
-static inline int geopm_time(struct geopm_time_s *time)
-{
-    return gettimeofday((struct timeval *)time, NULL);
-}
-
-static inline double geopm_time_diff(const struct geopm_time_s *begin, const struct geopm_time_s *end)
-{
-    return (end->t.tv_sec - begin->t.tv_sec) +
-           (end->t.tv_usec - begin->t.tv_usec) * 1E-6;
-}
-
-static inline bool geopm_time_comp(const struct geopm_time_s *aa, const struct geopm_time_s *bb)
-{
-    bool result = aa->t.tv_sec < bb->t.tv_sec;
-    if (!result && aa->t.tv_sec == bb->t.tv_sec) {
-        result = aa->t.tv_usec < bb->t.tv_usec;
-    }
-    return result;
-}
-
-static inline void geopm_time_add(const struct geopm_time_s *begin, double elapsed, struct geopm_time_s *end)
-{
-    *end = *begin;
-    end->t.tv_sec += elapsed;
-    elapsed -= floor(elapsed);
-    end->t.tv_usec += 1E6 * elapsed;
-}
-
-#endif
 
 const struct geopm_time_s GEOPM_TIME_REF = {{0, 0}};
 

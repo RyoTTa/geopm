@@ -31,10 +31,13 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+"""The geopm python package: launcher, error, io, pio, plotter, policy_store,
+topo, agent, and version.
+
 """
-The geopm python package with four modules: launcher, io plotter and version.
-"""
-__all__ = ['launcher', 'io', 'plotter', 'version']
+
+from __future__ import absolute_import
+
+__all__ = ['agent', 'error', 'io', 'launcher', 'pio', 'plotter', 'policy_store', 'topo', 'version']
 
 from geopmpy.version import __version__
-

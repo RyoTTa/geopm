@@ -39,12 +39,14 @@
 #include <memory>
 #include <vector>
 #include <map>
+#include <set>
 
 namespace geopm
 {
     class Comm;
     class PlatformIO;
-    class ManagerIOSampler;
+    class EndpointUser;
+    class FilePolicy;
     class ApplicationIO;
     class Reporter;
     class Tracer;
@@ -54,6 +56,7 @@ namespace geopm
     class Controller
     {
         public:
+            Controller();
             /// @brief Standard contstructor for the Controller.
             ///
             /// @param [in] ppn1_comm The MPI communicator that supports
@@ -71,7 +74,9 @@ namespace geopm
                        std::unique_ptr<Reporter> reporter,
                        std::unique_ptr<Tracer> tracer,
                        std::vector<std::unique_ptr<Agent> > level_agent,
-                       std::unique_ptr<ManagerIOSampler> manager_io_sampler);
+                       std::vector<std::string> policy_names,
+                       std::unique_ptr<EndpointUser> endpoint,
+                       const std::string &policy_path);
             virtual ~Controller();
             /// @brief Run control algorithm.
             ///
@@ -125,7 +130,22 @@ namespace geopm
             /// @brief Called upon failure to facilitate graceful destruction
             ///        of the Controller and notify application.
             void abort(void);
+            /// @brief Return the names of hosts active in the current
+            ///        job.  Must be called by all controllers in the
+            ///        tree or else a hang will occur.
+            /// @param [in] hostname Hostname of the calling Controller.
+            /// @return Returns set of hostnames of all connected
+            ///         controllers if the calling controller is at
+            ///         the root of the tree, otherwise returns an
+            ///         empty set.
+            std::set<std::string> get_hostnames(const std::string &hostname);
         private:
+            /// @brief Construct Agents for every level.  Agents can
+            ///        register new IOGroups, signals, and controls
+            ///        but not push them.
+            void create_agents(void);
+            /// @brief Call init() on every agent.  Agents can push
+            ///        signals and controls.
             void init_agents(void);
 
             std::shared_ptr<Comm> m_comm;
@@ -148,7 +168,10 @@ namespace geopm
             std::vector<double> m_out_sample;
             std::vector<double> m_trace_sample;
 
-            std::unique_ptr<ManagerIOSampler> m_manager_io_sampler;
+            std::unique_ptr<EndpointUser> m_endpoint;
+            std::unique_ptr<FilePolicy> m_file_policy;
+            std::string m_policy_path;
+            bool m_is_dynamic_policy;
 
             std::vector<std::string> m_agent_policy_names;
             std::vector<std::string> m_agent_sample_names;

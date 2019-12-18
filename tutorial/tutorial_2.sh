@@ -34,20 +34,35 @@
 set err=0
 . tutorial_env.sh
 
-export PATH=$GEOPM_BINDIR:$PATH
+export PATH=$GEOPM_BIN:$PATH
 export PYTHONPATH=$GEOPMPY_PKGDIR:$PYTHONPATH
-export LD_LIBRARY_PATH=$GEOPM_LIBDIR:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=$GEOPM_LIB:$LD_LIBRARY_PATH
 
 # Run on 2 nodes
-# with 8 MPI ranks
+# with 8 total application MPI ranks
 # launch geopm controller as an MPI process
 # create a report file
 # create trace files
-if [ "$GEOPM_LAUNCHER" = "srun" ]; then
+
+NUM_NODES=1
+RANKS_PER_NODE=2
+TOTAL_RANKS=$((${RANKS_PER_NODE} * ${NUM_NODES}))
+
+if [ "$MPIEXEC" ]; then
+    # Use MPIEXEC and set GEOPM environment variables to launch the job
+    LD_DYNAMIC_WEAK=true \
+    GEOPM_CTL=process \
+    GEOPM_REPORT=tutorial_2_report \
+    GEOPM_TRACE=tutorial_2_trace \
+    $MPIEXEC \
+    ./tutorial_2
+    err=$?
+elif [ "$GEOPM_LAUNCHER" = "srun" ]; then
     # Use GEOPM launcher wrapper script with SLURM's srun
     geopmlaunch srun \
-                -N 2 \
-                -n 8 \
+                -N ${NUM_NODES} \
+                -n ${TOTAL_RANKS} \
+		--mpi=pmix \
                 --geopm-ctl=process \
                 --geopm-report=tutorial_2_report \
                 --geopm-trace=tutorial_2_trace \
@@ -56,21 +71,22 @@ if [ "$GEOPM_LAUNCHER" = "srun" ]; then
 elif [ "$GEOPM_LAUNCHER" = "aprun" ]; then
     # Use GEOPM launcher wrapper script with ALPS's aprun
     geopmlaunch aprun \
-                -N 4 \
-                -n 8 \
+                -N ${RANKS_PER_NODE} \
+                -n ${TOTAL_RANKS} \
                 --geopm-ctl=process \
                 --geopm-report=tutorial_2_report \
                 --geopm-trace=tutorial_2_trace \
                 -- ./tutorial_2
     err=$?
-elif [ "$MPIEXEC" ]; then
-    # Use MPIEXEC and set GEOPM environment variables to launch the job
-    LD_DYNAMIC_WEAK=true \
-    GEOPM_CTL=process \
-    GEOPM_REPORT=tutorial_2_report \
-    GEOPM_TRACE=tutorial_2_trace \
-    $MPIEXEC \
-    ./tutorial_2
+elif [ "$GEOPM_LAUNCHER" = "impi" ]; then
+    # Use GEOPM launcher wrapper script with Intel(R) MPI
+    geopmlaunch impi \
+                -ppn ${RANKS_PER_NODE} \
+                -n ${TOTAL_RANKS} \
+                --geopm-ctl=process \
+                --geopm-report=tutorial_2_report \
+                --geopm-trace=tutorial_2_trace \
+                -- ./tutorial_2
     err=$?
 else
     echo "Error: tutorial_2.sh: set GEOPM_LAUNCHER to 'srun' or 'aprun'." 2>&1

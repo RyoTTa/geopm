@@ -180,6 +180,12 @@ namespace geopm
             /// @param [in] signal_name Name of the signal.
             /// @return A function from vector<double> to double.
             virtual std::function<double(const std::vector<double> &)> agg_function(const std::string &signal_name) const = 0;
+            /// @brief Returns a function that can be used to convert
+            ///        a signal of the given name into a printable
+            ///        string.
+            /// @param [in] signal_name Name of the signal.
+            /// @return A function from double to formatted std::string.
+            virtual std::function<std::string(double)> format_function(const std::string &signal_name) const = 0;
             /// @brief Returns a description of the signal.  This
             ///        string can be used by tools to generate help
             ///        text for users of PlatformIO.
@@ -188,13 +194,6 @@ namespace geopm
             ///        string can be used by tools to generate help
             ///        text for users of PlatformIO.
             virtual std::string control_description(const std::string &control_name) const = 0;
-            /// @brief Structure describing the values required to
-            ///        push a signal or control.
-            struct m_request_s {
-                std::string name;
-                int domain_type;
-                int domain_idx;
-            };
     };
 
     PlatformIO &platform_io(void);

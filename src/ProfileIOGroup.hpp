@@ -72,6 +72,7 @@ namespace geopm
             void save_control(void) override;
             void restore_control(void) override;
             std::function<double(const std::vector<double> &)> agg_function(const std::string &signal_name) const override;
+            std::function<std::string(double)> format_function(const std::string &signal_name) const override;
             std::string signal_description(const std::string &signal_name) const override;
             std::string control_description(const std::string &control_name) const override;
             static std::string plugin_name(void);
@@ -81,6 +82,7 @@ namespace geopm
                 M_SIGNAL_REGION_HASH,
                 M_SIGNAL_REGION_HINT,
                 M_SIGNAL_REGION_PROGRESS,
+                M_SIGNAL_REGION_COUNT,
                 M_SIGNAL_RUNTIME,
                 M_SIGNAL_THREAD_PROGRESS,
                 M_SIGNAL_EPOCH_RUNTIME,
@@ -106,6 +108,7 @@ namespace geopm
             std::vector<uint64_t> m_per_cpu_region_id;
             std::vector<double> m_per_cpu_progress;
             std::vector<double> m_per_cpu_runtime;
+            std::vector<int64_t> m_per_cpu_count;
             std::vector<double> m_thread_progress;
             std::vector<double> m_epoch_runtime_mpi;
             std::vector<double> m_epoch_runtime_ignore;

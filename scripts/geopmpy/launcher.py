@@ -40,18 +40,22 @@ the geopmpy.launcher.main() function.  See the geopmlauncher(1) man
 page for details about the command line interface.
 """
 
+from __future__ import absolute_import
+from __future__ import division
+
 import sys
 import os
 import argparse
 import subprocess
 import math
 import signal
-import StringIO
 import itertools
 import glob
 import shlex
 import stat
 import textwrap
+import io
+import locale
 
 from collections import OrderedDict
 from geopmpy import __version__
@@ -68,11 +72,13 @@ class Factory(object):
                                            ('SrunTOSSLauncher', SrunTOSSLauncher)])
 
     def create(self, argv, num_rank=None, num_node=None, cpu_per_rank=None, timeout=None,
-               time_limit=None, job_name=None, node_list=None, host_file=None):
+               time_limit=None, job_name=None, node_list=None, host_file=None,
+               reservation=None):
         try:
             launcher_name = argv[1]
             return self._launcher_dict[launcher_name](argv[2:], num_rank, num_node, cpu_per_rank, timeout,
-                                                      time_limit, job_name, node_list, host_file)
+                                                      time_limit, job_name, node_list, host_file,
+                                                      reservation=reservation)
         except KeyError:
             raise LookupError('Unsupported launcher "{}" requested'.format(launcher_name))
 
@@ -90,7 +96,7 @@ def int_ceil_div(aa, bb):
     """
     Shortcut for the ceiling of the ratio of two integers.
     """
-    return int(math.ceil(float(aa) / float(bb)))
+    return int(math.ceil(aa / bb))
 
 
 def range_str(values):
@@ -108,7 +114,7 @@ def range_str(values):
     values.sort()
     # Group values with equal delta compared the sequence from zero to
     # N, these are sequential.
-    for aa, bb in itertools.groupby(enumerate(values), lambda(xx, yy): yy - xx):
+    for aa, bb in itertools.groupby(enumerate(values), lambda xx_yy: xx_yy[1] - xx_yy[0]):
         bb = list(bb)
         # The range is from the smallest to the largest in the group.
         begin = bb[0][1]
@@ -146,6 +152,7 @@ class Config(object):
         parser.add_argument('--geopm-report-signals', dest='report_signals', type=str)
         parser.add_argument('--geopm-trace', dest='trace', type=str)
         parser.add_argument('--geopm-trace-signals', dest='trace_signals', type=str)
+        parser.add_argument('--geopm-trace-profile', dest='trace_profile', type=str)
         parser.add_argument('--geopm-profile', dest='profile', type=str)
         parser.add_argument('--geopm-ctl', dest='ctl', type=str, default='process')
         parser.add_argument('--geopm-agent', dest='agent', type=str)
@@ -169,6 +176,7 @@ class Config(object):
         self.endpoint = opts.endpoint
         self.report = opts.report
         self.trace = opts.trace
+        self.trace_profile = opts.trace_profile
         self.trace_signals = opts.trace_signals
         self.report_signals = opts.report_signals
         self.agent = opts.agent
@@ -222,6 +230,8 @@ class Config(object):
             result['GEOPM_REPORT'] = self.report
         if self.trace:
             result['GEOPM_TRACE'] = self.trace
+        if self.trace_profile:
+            result['GEOPM_TRACE_PROFILE'] = self.trace_profile
         if self.trace_signals:
             result['GEOPM_TRACE_SIGNALS'] = self.trace_signals
         if self.report_signals:
@@ -301,7 +311,8 @@ class Launcher(object):
     Defines common methods used by all Launcher objects.
     """
     def __init__(self, argv, num_rank=None, num_node=None, cpu_per_rank=None, timeout=None,
-                 time_limit=None, job_name=None, node_list=None, host_file=None, partition=None):
+                 time_limit=None, job_name=None, node_list=None, host_file=None, partition=None,
+                 reservation=None):
         """
         Constructor takes the command line options passed to the job
         launch application along with optional override values for
@@ -363,6 +374,9 @@ class Launcher(object):
         if partition is not None:
             self.is_override_enabled = True
             self.partition = partition
+        if reservation is not None:
+            self.is_override_enabled = True
+            self.reservation = reservation
 
         # Calculate derived values
         if self.rank_per_node is None and self.num_rank and self.num_node:
@@ -404,7 +418,28 @@ class Launcher(object):
         """
         Execute the command given to constructor with modified command
         line options and environment variables.
+
+        Args:
+            stdout (writable object): Destination for standard output
+            stderr (writable object): Destination for standard error
         """
+        # Output encodings may not be set, or may not be available through the
+        # provided output object. Try to match the encoding if it is given,
+        # otherwise use the current configured locale's encoding.
+        try:
+            stdout_encoding = stdout.encoding
+        except AttributeError:
+            stdout_encoding = None
+        if stdout_encoding is None:
+            stdout_encoding = locale.getpreferredencoding()
+
+        try:
+            stderr_encoding = stderr.encoding
+        except AttributeError:
+            stderr_encoding = None
+        if stderr_encoding is None:
+            stderr_encoding = locale.getpreferredencoding()
+
         argv_mod = [self.launcher_command()]
         if self.is_override_enabled:
             argv_mod.extend(self.launcher_argv(False))
@@ -417,7 +452,7 @@ class Launcher(object):
             for it in self.environ_ext.iteritems():
                 echo.append('{}={}'.format(it[0], it[1]))
         echo.extend(argv_mod)
-        echo = '\n' + ' '.join(echo) + '\n\n'
+        echo = u'\n' + u' '.join(echo) + u'\n\n'
         stdout.write(echo)
         stdout.flush()
         signal.signal(signal.SIGINT, self.int_handler)
@@ -431,37 +466,47 @@ class Launcher(object):
         else:
             is_geopmctl = False
 
-        if 'fileno' in dir(stdout) and 'fileno' in dir(stderr):
+        # Popen stream redirection only works with things that can be written
+        # through file descriptors. The launcher may be given a StringIO or some
+        # other writable object without a file descriptor. Use PIPE and
+        # communicate() so we can work in those cases.
+        #
+        # Why not just always use PIPE? It buffers all output until the process
+        # terminates, which could be unwanted when live output is desired, and
+        # can consume memory unnecessarily.
+        try:
+            popen_stdout = stdout.fileno()
+            popen_stderr = stderr.fileno()
             if is_geopmctl:
-                # Need to set OMP_NUM_THREADS to 1 in the env before the run
                 stdout.write("Controller launch config: {}\n".format(geopm_argv))
                 stdout.flush()
-                self.config.set_omp_num_threads(1)
-                geopm_pid = subprocess.Popen(geopm_argv, env=self.environ(),
-                                             stdout=stdout, stderr=stderr, shell=True)
-            if self.is_geopm_enabled:
-                self.config.set_omp_num_threads(self.cpu_per_rank)
-            pid = subprocess.Popen(argv_mod, env=self.environ(),
-                                   stdout=stdout, stderr=stderr, shell=True)
-            pid.communicate()
-            if is_geopmctl:
-                geopm_pid.communicate()
-        else:
-            if is_geopmctl:
-                self.config.set_omp_num_threads(1)
-                geopm_pid = subprocess.Popen(geopm_argv, env=self.environ(),
-                                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-            if self.is_geopm_enabled:
-                self.config.set_omp_num_threads(self.cpu_per_rank)
-            pid = subprocess.Popen(argv_mod, env=self.environ(),
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-            stdout_str, stderr_str = pid.communicate()
-            stdout.write(stdout_str)
-            stderr.write(stderr_str)
-            if is_geopmctl:
-                stdout_str, stderr_str = geopm_pid.communicate()
-                stdout.write(stdout_str)
-                stderr.write(stderr_str)
+        except (io.UnsupportedOperation, AttributeError):
+            # StringIO.StringIO objects raise UnsupportedOperation, but
+            # io.StringIO objects have no fileno() member.
+            popen_stdout = subprocess.PIPE
+            popen_stderr = subprocess.PIPE
+
+        if is_geopmctl:
+            # Need to set OMP_NUM_THREADS to 1 in the env before the run
+            self.config.set_omp_num_threads(1)
+            geopm_pid = subprocess.Popen(geopm_argv, env=self.environ(),
+                                         stdout=popen_stdout, stderr=popen_stderr,
+                                         shell=True)
+        if self.is_geopm_enabled:
+            self.config.set_omp_num_threads(self.cpu_per_rank)
+        pid = subprocess.Popen(argv_mod, env=self.environ(),
+                               stdout=popen_stdout, stderr=popen_stderr,
+                               shell=True)
+        stdout_bytes, stderr_bytes = pid.communicate()
+        if subprocess.PIPE in (popen_stdout, popen_stderr):
+            stdout.write(stdout_bytes.decode(encoding=stdout_encoding))
+            stderr.write(stderr_bytes.decode(encoding=stderr_encoding))
+
+        if is_geopmctl:
+            stdout_bytes, stderr_bytes = geopm_pid.communicate()
+            if subprocess.PIPE in (popen_stdout, popen_stderr):
+                stdout.write(stdout_bytes.decode(encoding=stdout_encoding))
+                stderr.write(stderr_bytes.decode(encoding=stderr_encoding))
 
         signal.signal(signal.SIGINT, self.default_handler)
         if pid.returncode:
@@ -496,7 +541,10 @@ class Launcher(object):
         # Create the cache for the PlatformTopo on each compute node
         argv = shlex.split('dummy {} --geopm-ctl-disable -- geopmread --cache'.format(self.launcher_command()))
         factory = Factory()
-        launcher = factory.create(argv, self.num_node, self.num_node, host_file=self.host_file, node_list=self.node_list)
+        launcher = factory.create(argv, self.num_node, self.num_node,
+                                  host_file=self.host_file,
+                                  node_list=self.node_list,
+                                  reservation=self.reservation)
         launcher.run()
         # Query the topology for Launcher calculations by running lscpu on one node.
         # Note that a warning may be emitted by underlying launcher when main application uses more
@@ -504,8 +552,11 @@ class Launcher(object):
         # allocation and check that the node topology is uniform across all nodes used by the job
         # instead of just running on one node.
         argv = shlex.split('dummy {} --geopm-ctl-disable -- lscpu --hex'.format(self.launcher_command()))
-        launcher = factory.create(argv, 1, 1, host_file=self.host_file, node_list=self.node_list)
-        ostream = StringIO.StringIO()
+        launcher = factory.create(argv, 1, 1,
+                                  host_file=self.host_file,
+                                  node_list=self.node_list,
+                                  reservation=self.reservation)
+        ostream = io.StringIO()
         launcher.run(stdout=ostream)
         out = ostream.getvalue()
         cpu_tpc_core_socket = [int(line.split(':')[1])
@@ -638,6 +689,7 @@ class Launcher(object):
         result.extend(self.node_list_option())
         result.extend(self.host_file_option())
         result.extend(self.partition_option())
+        result.extend(self.reservation_option())
         result.extend(self.performance_governor_option())
         return result
 
@@ -671,9 +723,10 @@ class Launcher(object):
         return []
 
     def preload_option(self):
-        self.environ_ext['LD_PRELOAD'] = ':'.join((ll for ll in
-                                                   ('libgeopm.so', os.getenv('LD_PRELOAD'))
-                                                   if ll is not None))
+        if self.config and self.config.get_preload():
+            self.environ_ext['LD_PRELOAD'] = ':'.join((ll for ll in
+                                                       ('libgeopm.so', os.getenv('LD_PRELOAD'))
+                                                       if ll is not None))
         return []
 
     def timeout_option(self):
@@ -719,6 +772,9 @@ class Launcher(object):
         """
         return []
 
+    def reservation_option(self):
+        return []
+
     def performance_governor_option(self):
         """
         Returns a list containing the command line options specifying
@@ -747,12 +803,14 @@ class SrunLauncher(Launcher):
     application srun.
     """
     def __init__(self, argv, num_rank=None, num_node=None, cpu_per_rank=None, timeout=None,
-                 time_limit=None, job_name=None, node_list=None, host_file=None):
+                 time_limit=None, job_name=None, node_list=None, host_file=None,
+                 reservation=None):
         """
         Pass through to Launcher constructor.
         """
         super(SrunLauncher, self).__init__(argv, num_rank, num_node, cpu_per_rank, timeout,
-                                           time_limit, job_name, node_list, host_file)
+                                           time_limit, job_name, node_list, host_file,
+                                           reservation=reservation)
 
         if (self.is_geopm_enabled and
             self.config.get_ctl() == 'application' and
@@ -783,6 +841,7 @@ class SrunLauncher(Launcher):
         parser.add_argument('-w', '--nodelist', dest='node_list', type=str)
         parser.add_argument('--ntasks-per-node', dest='rank_per_node', type=int)
         parser.add_argument('-p', '--partition', dest='partition', type=str)
+        parser.add_argument('--reservation', dest='reservation', type=str)
 
         opts, self.argv_unparsed = parser.parse_known_args(self.argv_unparsed)
 
@@ -804,6 +863,7 @@ class SrunLauncher(Launcher):
         self.node_list = opts.node_list  # Note this may also be the host file
         self.host_file = None
         self.partition = opts.partition
+        self.reservation = opts.reservation
 
         if (self.is_geopm_enabled and
             any(aa.startswith(('--cpu_bind', '--cpu-bind')) for aa in self.argv)):
@@ -838,11 +898,11 @@ class SrunLauncher(Launcher):
             aff_list = self.affinity_list(is_geopmctl)
             pid = subprocess.Popen(['srun', '--help'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             help_msg, err = pid.communicate()
-            if help_msg.find('--mpibind') != -1:
+            if help_msg.find(b'--mpibind') != -1:
                 result.append('--mpibind=off')
-            if help_msg.find('--cpu_bind') != -1:
+            if help_msg.find(b'--cpu_bind') != -1:
                 bind_cmd = '--cpu_bind'
-            elif help_msg.find('--cpu-bind') != -1:
+            elif help_msg.find(b'--cpu-bind') != -1:
                 bind_cmd = '--cpu-bind'
             else:
                 raise RuntimeError('SLURM\'s cpubind plugin was not detected.  Unable to affinitize ranks.')
@@ -915,6 +975,12 @@ class SrunLauncher(Launcher):
             result = ['-p', self.partition]
         return result
 
+    def reservation_option(self):
+        result = []
+        if self.reservation is not None:
+            result = ['--reservation', self.reservation]
+        return result
+
     def performance_governor_option(self):
         return ['--cpu-freq=Performance']
 
@@ -923,7 +989,7 @@ class SrunLauncher(Launcher):
         Returns a list of the names of compute nodes that are currently
         available to run jobs using the sinfo command.
         """
-        return list(set(subprocess.check_output('sinfo -t idle -hNo %N', shell=True).splitlines()))
+        return list(set(subprocess.check_output('sinfo -t idle -hNo %N', shell=True).decode().splitlines()))
 
     def get_alloc_nodes(self):
         """
@@ -932,7 +998,7 @@ class SrunLauncher(Launcher):
         sinfo command.
 
         """
-        return list(set(subprocess.check_output('scontrol show hostname', shell=True).splitlines()))
+        return list(set(subprocess.check_output('scontrol show hostname', shell=True).decode().splitlines()))
 
     def preload_option(self):
         result = []
@@ -971,13 +1037,16 @@ class IMPIExecLauncher(Launcher):
     Launcher derived object for use with the Intel(R) MPI Library job launch
     application mpiexec.hydra.
     """
+    _is_once = True
     def __init__(self, argv, num_rank=None, num_node=None, cpu_per_rank=None, timeout=None,
-                 time_limit=None, job_name=None, node_list=None, host_file=None):
+                 time_limit=None, job_name=None, node_list=None, host_file=None,
+                 reservation=None):
         """
         Pass through to Launcher constructor.
         """
         super(IMPIExecLauncher, self).__init__(argv, num_rank, num_node, cpu_per_rank, timeout,
-                                               time_limit, job_name, node_list, host_file)
+                                               time_limit, job_name, node_list, host_file,
+                                               reservation=reservation)
 
         self.is_slurm_enabled = False
         if os.getenv('SLURM_NNODES'):
@@ -1024,6 +1093,7 @@ class IMPIExecLauncher(Launcher):
         self.timeout = None
         self.time_limit = None
         self.job_name = None
+        self.reservation = None
 
     def num_node_option(self):
         return ['-ppn', str(self.rank_per_node)]
@@ -1043,7 +1113,8 @@ class IMPIExecLauncher(Launcher):
                 mask = list(mask_zero)
                 for cpu in cpu_set:
                     mask[self.num_linux_cpu - 1 - cpu] = '1'
-                mask = '0x{:x}'.format(int(''.join(mask), 2))
+                # Note: Intel MPI has a bug that does not allow prefixing hex masks with 0x
+                mask = '{:x}'.format(int(''.join(mask), 2))
                 mask_list.append(mask)
             self.environ_ext['I_MPI_PIN_DOMAIN'] = '[{}]'.format(','.join(mask_list))
         return []
@@ -1071,6 +1142,19 @@ class IMPIExecLauncher(Launcher):
             result = ['-hosts', self.node_list]
         elif self.host_file is not None:
             result = ['-f', self.host_file]
+        else:
+            # If this error is encountered, without the is_once check it will be displayed 3 times per run:
+            #     1. For the PlatformTopo cache creation.
+            #     2. For the call to 'lscpu --hex' used in the Launcher itself.
+            #     3. For actually running the app requested.
+            if IMPIExecLauncher._is_once:
+                sys.stderr.write('<geopmpy.launcher> Warning: Hosts not defined, GEOPM may fail to start.  '
+                                 'Use "-f <host_file>" or "-hosts" to specify the hostnames of the compute nodes.\n')
+                IMPIExecLauncher._is_once = False;
+
+        if self.is_slurm_enabled:
+            result += ['-bootstrap', 'slurm']
+
         return result
 
     def get_idle_nodes(self):
@@ -1079,7 +1163,7 @@ class IMPIExecLauncher(Launcher):
         available to run jobs using the sinfo command.
         """
         if self.is_slurm_enabled:
-            return subprocess.check_output('sinfo -t idle -hNo %N | uniq', shell=True).splitlines()
+            return subprocess.check_output('sinfo -t idle -hNo %N | uniq', shell=True).decode().splitlines()
         else:
             raise NotImplementedError('Idle nodes feature requires use with SLURM')
 
@@ -1091,19 +1175,21 @@ class IMPIExecLauncher(Launcher):
 
         """
         if self.is_slurm_enabled:
-            return subprocess.check_output('sinfo -t alloc -hNo %N', shell=True).splitlines()
+            return subprocess.check_output('sinfo -t alloc -hNo %N', shell=True).decode().splitlines()
         else:
             raise NotImplementedError('Idle nodes feature requires use with SLURM')
 
 
 class AprunLauncher(Launcher):
     def __init__(self, argv, num_rank=None, num_node=None, cpu_per_rank=None, timeout=None,
-                 time_limit=None, job_name=None, node_list=None, host_file=None):
+                 time_limit=None, job_name=None, node_list=None, host_file=None,
+                 reservation=None):
         """
         Pass through to Launcher constructor.
         """
         super(AprunLauncher, self).__init__(argv, num_rank, num_node, cpu_per_rank, timeout,
-                                            time_limit, job_name, node_list, host_file)
+                                            time_limit, job_name, node_list, host_file,
+                                            reservation=reservation)
 
         if self.is_geopm_enabled and self.config.get_ctl() == 'application':
             raise RuntimeError('When using aprun specifying --geopm-ctl=application is not allowed.')
@@ -1246,6 +1332,8 @@ GEOPM_OPTIONS:
       --geopm-report-signals=signals
                                comma-separated list of signals to add to report
       --geopm-trace=path       create geopm trace files with base name "path"
+      --geopm-trace-profile=path
+                               create geopm profile trace files with base name "path"
       --geopm-trace-signals=signals
                                comma-separated list of signals to add as columns
                                in the trace

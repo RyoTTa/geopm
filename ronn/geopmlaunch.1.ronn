@@ -208,6 +208,21 @@ listed below.
   command line option will override any value currently set in the
   environment.  See the ENVIRONMENT section of **geopm(7)**.
 
+* `--geopm-trace-profile` path:
+  The base name and path of the profile trace file(s) generated if
+  this option is specified.  One trace file is generated for each
+  compute node used by the application containing a pipe-delimited
+  ASCII table describing a log of each call to the `geopm_prof_*()`
+  APIs.  The path is extended with the host name of the node for each
+  created file.  The profile trace files will be written to the file
+  system path specified or current directory if only a file name is
+  given.  This feature is primarily a debugging tool, and may not
+  scale to large node counts due to file system issues.  This option
+  is used by the launcher to set the GEOPM_TRACE_PROFILE environment
+  variable.  The command line option will override any value currently
+  set in the environment.  See the ENVIRONMENT section of
+  **geopm(7)**.
+
 * `--geopm-profile` name:
   The name of the profile which is printed in the report and trace
   files.  This name can be used to index the data in post-processing.
@@ -394,6 +409,26 @@ _application_ to the command line argument.  In the case of
 `GEOPM_CTL` one can ONLY specify `process` or `pthread`, as
 launching the controller as a separate application is handled through
 the `geopmctl` binary.
+
+The interpretation of the environment is affected if either of the
+GEOPM configuration files exist:
+
+    /etc/geopm/environment-default.json
+    /etc/geopm/environment-override.json
+
+These files may specify system default and override settings for all
+of the GEOPM environment variables.  The `environment-default.json`
+file contains a JSON object mapping GEOPM environment variable strings
+to strings that define default values for any unspecified GEOPM
+environment variable or unspecified `geopmlaunch` command line
+options.  The `environment-override.json` contains a JSON object that
+defines values for GEOPM environment variables that take precedence
+over any settings provided by the user either through the environment
+or through the `geopmlaunch` command line options.  The order of
+precedence for each GEOPM variable is: override configuration file,
+`geopmlaunch` command line option, environment setting, the default
+configuration file, and finally there are some preset default values
+that are coded into GEOPM which have the lowest precedence.
 
 The `KMP_WARNINGS` environment variable is set to 'FALSE', thus
 disabling the Intel OpenMP warnings.  This avoids warnings emitted

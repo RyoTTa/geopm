@@ -53,7 +53,7 @@
 #include "geopm_time.h"
 #include "geopm_signal_handler.h"
 #include "geopm_sched.h"
-#include "geopm_env.h"
+#include "Environment.hpp"
 #include "Helper.hpp"
 #include "PlatformTopo.hpp"
 #include "ProfileTable.hpp"
@@ -83,16 +83,16 @@ namespace geopm
         , m_tprof_table(nullptr)
         , m_rank_per_node(0)
     {
-        std::string sample_key(geopm_env_shmkey());
-        sample_key += "-sample";
+        const Environment &env = environment();
+        const std::string key_base = env.shmkey();
+        std::string sample_key = key_base + "-sample";
         std::string sample_key_path("/dev/shm/" + sample_key);
         // Remove shared memory file if one already exists.
         (void)unlink(sample_key_path.c_str());
         m_ctl_shmem = geopm::make_unique<SharedMemoryImp>(sample_key, sizeof(struct geopm_ctl_message_s));
-        m_ctl_msg = geopm::make_unique<ControlMessageImp>(*(struct geopm_ctl_message_s *)m_ctl_shmem->pointer(), true, true);
+        m_ctl_msg = geopm::make_unique<ControlMessageImp>(*(struct geopm_ctl_message_s *)m_ctl_shmem->pointer(), true, true, env.timeout());
 
-        std::string tprof_key(geopm_env_shmkey());
-        tprof_key += "-tprof";
+        std::string tprof_key = key_base + "-tprof";
         std::string tprof_key_path("/dev/shm/" + tprof_key);
         // Remove shared memory file if one already exists.
         (void)unlink(tprof_key_path.c_str());
@@ -102,7 +102,15 @@ namespace geopm
         errno = 0; // Ignore errors from the unlink calls.
     }
 
-    ProfileSamplerImp::~ProfileSamplerImp() = default;
+    ProfileSamplerImp::~ProfileSamplerImp()
+    {
+        if (m_tprof_shmem) {
+            m_tprof_shmem->unlink();
+        }
+        if (m_ctl_shmem) {
+            m_ctl_shmem->unlink();
+        }
+    }
 
     void ProfileSamplerImp::initialize(void)
     {
@@ -230,9 +238,6 @@ namespace geopm
         }
         m_rank_sampler.front()->report_name(m_report_name);
         m_rank_sampler.front()->profile_name(m_profile_name);
-        // report and profile names may have been inserted as region names
-        m_name_set.erase(m_report_name);
-        m_name_set.erase(m_profile_name);
 
         m_do_report = true;
 
@@ -277,6 +282,13 @@ namespace geopm
         errno = 0; // Ignore errors from the unlink call.
         m_table_shmem = geopm::make_unique<SharedMemoryImp>(shm_key, table_size);
         m_table = geopm::make_unique<ProfileTableImp>(m_table_shmem->size(), m_table_shmem->pointer());
+    }
+
+    ProfileRankSamplerImp::~ProfileRankSamplerImp()
+    {
+        if (m_table_shmem) {
+            m_table_shmem->unlink();
+        }
     }
 
     size_t ProfileRankSamplerImp::capacity(void) const

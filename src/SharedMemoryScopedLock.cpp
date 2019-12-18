@@ -30,32 +30,27 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef GEOPM_ENV_H_INCLUDE
-#define GEOPM_ENV_H_INCLUDE
-#ifdef __cplusplus
-extern "C"
+#include "SharedMemoryScopedLock.hpp"
+
+#include "Exception.hpp"
+
+namespace geopm
 {
-#endif
+    SharedMemoryScopedLock::SharedMemoryScopedLock(pthread_mutex_t *mutex)
+        : m_mutex(mutex)
+    {
+        if (m_mutex == nullptr) {
+            throw Exception("SharedMemoryScopedLock(): mutex cannot be NULL",
+                            GEOPM_ERROR_INVALID, __FILE__, __LINE__);
+        }
+        int err = pthread_mutex_lock(m_mutex); // Default mutex will block until this completes.
+        if (err) {
+            throw Exception("SharedMemoryScopedLock(): pthread_mutex_lock() failed:", err, __FILE__, __LINE__);
+        }
+    }
 
-const char *geopm_env_policy(void);
-const char *geopm_env_agent(void);
-const char *geopm_env_shmkey(void);
-const char *geopm_env_trace(void);
-const char *geopm_env_plugin_path(void);
-const char *geopm_env_report(void);
-const char *geopm_env_comm(void);
-const char *geopm_env_profile(void);
-const char *geopm_env_trace_signals(void);
-const char *geopm_env_report_signals(void);
-int geopm_env_max_fan_out(void);
-int geopm_env_pmpi_ctl(void);
-int geopm_env_do_region_barrier(void);
-int geopm_env_do_trace(void);
-int geopm_env_do_profile(void);
-int geopm_env_timeout(void);
-int geopm_env_debug_attach(void);
-
-#ifdef __cplusplus
+    SharedMemoryScopedLock::~SharedMemoryScopedLock()
+    {
+        pthread_mutex_unlock(m_mutex);
+    }
 }
-#endif
-#endif

@@ -30,17 +30,18 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef OMPT_HPP_INCLUDE
-#define OMPT_HPP_INCLUDE
+#ifndef MOCKENDPOINTUSER_HPP_INCLUDE
+#define MOCKENDPOINTUSER_HPP_INCLUDE
 
-#include <string>
+#include "EndpointUser.hpp"
 
-namespace geopm
+class MockEndpointUser : public geopm::EndpointUser
 {
-    /// Convert function-address into function-name in region name
-    /// reported by OMPT.  If OMPT is not enabled, this function is a
-    /// pass through.
-    void ompt_pretty_name(std::string &name);
-}
+    public:
+        MOCK_METHOD1(read_policy,
+                     double(std::vector<double> &policy));
+        MOCK_METHOD1(write_sample,
+                     void(const std::vector<double> &sample));
+};
 
 #endif

@@ -1,0 +1,70 @@
+##### geopm 1.0.0+dev216ge6c293c #####
+Start Time: Thu Oct 10 03:07:36 2019
+Profile: /home/seokin/geopm_new/geopm/tutorial/./tutorial_0
+Agent: monitor
+Policy: {}
+
+Host: c2
+Region unmarked-region (0x00000000725e8066):
+    runtime (sec): 5.01895
+    sync-runtime (sec): 5.00552
+    package-energy (joules): 104.121
+    dram-energy (joules): 3.60677
+    power (watts): 20.8013
+    frequency (%): 114.617
+    frequency (Hz): 3.89699e+09
+    mpi-runtime (sec): 0
+    count: 0
+Epoch Totals:
+    runtime (sec): 0
+    sync-runtime (sec): 0
+    package-energy (joules): 0
+    dram-energy (joules): 0
+    power (watts): 0
+    frequency (%): 0
+    frequency (Hz): 0
+    mpi-runtime (sec): 0
+    count: 0
+    epoch-runtime-ignore (sec): 0
+Application Totals:
+    runtime (sec): 5.03477
+    package-energy (joules): 104.645
+    dram-energy (joules): 3.6187
+    power (watts): 20.7844
+    mpi-runtime (sec): 0
+    ignore-time (sec): 0
+    geopmctl memory HWM: 19276 kB
+    geopmctl network BW (B/sec): 0
+
+Host: c3
+Region unmarked-region (0x00000000725e8066):
+    runtime (sec): 5.02188
+    sync-runtime (sec): 5.01546
+    package-energy (joules): 101.212
+    dram-energy (joules): 3.61369
+    power (watts): 20.18
+    frequency (%): 114.619
+    frequency (Hz): 3.89706e+09
+    mpi-runtime (sec): 0
+    count: 0
+Epoch Totals:
+    runtime (sec): 0
+    sync-runtime (sec): 0
+    package-energy (joules): 0
+    dram-energy (joules): 0
+    power (watts): 0
+    frequency (%): 0
+    frequency (Hz): 0
+    mpi-runtime (sec): 0
+    count: 0
+    epoch-runtime-ignore (sec): 0
+Application Totals:
+    runtime (sec): 5.03373
+    package-energy (joules): 101.403
+    dram-energy (joules): 3.61833
+    power (watts): 20.1448
+    mpi-runtime (sec): 0
+    ignore-time (sec): 0
+    geopmctl memory HWM: 19300 kB
+    geopmctl network BW (B/sec): 0
+

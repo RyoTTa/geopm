@@ -39,7 +39,6 @@
 #include "Comm.hpp"
 #include "Exception.hpp"
 #include "SharedMemory.hpp"
-#include "geopm_env.h"
 #include "geopm_mpi_comm_split.h"
 #include "config.h"
 
@@ -281,7 +280,10 @@ namespace geopm
 
     bool MPIComm::is_valid() const
     {
-        return (geopm_is_comm_enabled()
+        int is_finalized;
+        PMPI_Finalized(&is_finalized);
+        return (is_finalized == 0
+                && geopm_is_comm_enabled()
                 && m_comm != MPI_COMM_NULL);
     }
 

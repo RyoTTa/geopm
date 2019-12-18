@@ -47,6 +47,7 @@
 
 #include "geopm_sched.h"
 #include "geopm_hash.h"
+#include "Helper.hpp"
 #include "PlatformTopo.hpp"
 #include "MSRIOImp.hpp"
 #include "MSR.hpp"
@@ -67,6 +68,10 @@ using testing::WithArg;
 using testing::NiceMock;
 using json11::Json;
 
+bool is_format_double(std::function<std::string(double)> func);
+bool is_format_integer(std::function<std::string(double)> func);
+bool is_format_raw64(std::function<std::string(double)> func);
+
 class MSRIOGroupTest : public :: testing :: Test
 {
     protected:
@@ -86,7 +91,7 @@ class MockMSRIO : public geopm::MSRIOImp
         std::vector<std::string> test_dev_paths();
     protected:
         void msr_path(int cpu_idx,
-                      bool is_fallback,
+                      int is_fallback,
                       std::string &path) override;
         void msr_batch_path(std::string &path) override;
 
@@ -150,7 +155,7 @@ std::vector<std::string> MockMSRIO::test_dev_paths()
 }
 
 void MockMSRIO::msr_path(int cpu_idx,
-                         bool is_fallback,
+                         int is_fallback,
                          std::string &path)
 {
     path = m_test_dev_path[cpu_idx];
@@ -639,6 +644,19 @@ TEST_F(MSRIOGroupTest, cpuid)
    else {
        std::cerr << "Warning: skipping MSRIOGroupTest.cpuid because non-intel architecture detected" << std::endl;
    }
+}
+
+TEST_F(MSRIOGroupTest, format_function)
+{
+    std::function<std::string(double)> func;
+    func = m_msrio_group->format_function("MSR::PERF_STATUS:FREQ");
+    EXPECT_TRUE(is_format_double(func));
+    func = m_msrio_group->format_function("MSR::FIXED_CTR0:INST_RETIRED_ANY");
+    EXPECT_TRUE(is_format_integer(func));
+    func = m_msrio_group->format_function("MSR::PERF_STATUS#");
+    EXPECT_TRUE(is_format_raw64(func));
+    GEOPM_EXPECT_THROW_MESSAGE(m_msrio_group->format_function("INVALID"),
+                               GEOPM_ERROR_INVALID, "not valid for MSRIOGroup");
 }
 
 TEST_F(MSRIOGroupTest, register_msr_signal)

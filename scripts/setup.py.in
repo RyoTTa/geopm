@@ -64,12 +64,12 @@ The python front end to the GEOPM runtime.  Includes scripts for
 launching the runtime and postprocessing the output data."""
 
 
-scripts = ["geopmlaunch"]
+scripts = ["geopmlaunch", "geopmconvertreport"]
 add_beta_tools = @ENABLE_BETA@
 if add_beta_tools:
     scripts += ["geopmanalysis", "geopmplotter"]
 
-classifiers = ['Development Status :: 4 - Beta',
+classifiers = ['Development Status :: 5 - Production/Stable',
                'License :: OSI Approved :: BSD License',
                'Operating System :: POSIX :: Linux',
                'Natural Language :: English',
@@ -77,14 +77,17 @@ classifiers = ['Development Status :: 4 - Beta',
                'Topic :: Software Development :: Libraries :: Application Frameworks',
                'Topic :: System :: Distributed Computing',
                'Topic :: System :: Hardware :: Symmetric Multi-processing',
-               'Topic :: System :: Power (UPS)']
+               'Topic :: System :: Power (UPS)',
+               'Programming Language :: Python :: 2 :: Only',
+               'Programming Language :: Python :: 2.7']
 
 install_requires = ['pandas>=0.19.2',
                     'natsort',
                     'matplotlib',
                     'cycler',
                     'tables',
-                    'psutil']
+                    'psutil',
+                    'cffi']
 
 setup(name='geopmpy',
       version=__version__,

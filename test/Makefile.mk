@@ -56,6 +56,11 @@ GTEST_TESTS = test/gtest_links/AgentFactoryTest.static_info_monitor \
               test/gtest_links/CommMPIImpTest.mpi_mem_ops \
               test/gtest_links/CommMPIImpTest.mpi_reduce \
               test/gtest_links/CommMPIImpTest.mpi_win_ops \
+              test/gtest_links/CNLIOGroupTest.valid_signals \
+              test/gtest_links/CNLIOGroupTest.read_signal \
+              test/gtest_links/CNLIOGroupTest.push_signal \
+              test/gtest_links/CNLIOGroupTest.parse_energy \
+              test/gtest_links/CNLIOGroupTest.parse_power \
               test/gtest_links/ControlMessageTest.cpu_rank \
               test/gtest_links/ControlMessageTest.is_name_begin \
               test/gtest_links/ControlMessageTest.is_sample_begin \
@@ -80,14 +85,46 @@ GTEST_TESTS = test/gtest_links/AgentFactoryTest.static_info_monitor \
               test/gtest_links/CpuinfoIOGroupTest.parse_sticker_without_at \
               test/gtest_links/CpuinfoIOGroupTest.plugin \
               test/gtest_links/CpuinfoIOGroupTest.valid_signals \
-              test/gtest_links/EnergyEfficientRegionTest.after_too_many_increase_freq_stays_at_higher \
-              test/gtest_links/EnergyEfficientRegionTest.freq_does_not_go_above_max \
-              test/gtest_links/EnergyEfficientRegionTest.freq_does_not_go_below_min \
+              test/gtest_links/CSVTest.buffer \
+              test/gtest_links/CSVTest.columns \
+              test/gtest_links/CSVTest.header \
+              test/gtest_links/CSVTest.negative \
+              test/gtest_links/DebugIOGroupTest.is_valid \
+              test/gtest_links/DebugIOGroupTest.push \
+              test/gtest_links/DebugIOGroupTest.read_signal \
+              test/gtest_links/DebugIOGroupTest.register_signal_error \
+              test/gtest_links/DebugIOGroupTest.sample \
+              test/gtest_links/ELFTest.symbols_exist \
+              test/gtest_links/ELFTest.symbol_lookup \
+              test/gtest_links/EndpointTest.write_shm_policy \
+              test/gtest_links/EndpointTest.parse_shm_sample \
+              test/gtest_links/EndpointTest.get_agent \
+              test/gtest_links/EndpointTestIntegration.write_shm \
+              test/gtest_links/EndpointTestIntegration.write_read_policy \
+              test/gtest_links/EndpointTestIntegration.write_read_sample \
+              test/gtest_links/EndpointUserTest.parse_shm_policy \
+              test/gtest_links/EndpointUserTest.write_shm_sample \
+              test/gtest_links/EndpointUserTestIntegration.parse_shm \
+              test/gtest_links/EnergyEfficientAgentTest.aggregate_sample \
+              test/gtest_links/EnergyEfficientAgentTest.do_write_batch \
+              test/gtest_links/EnergyEfficientAgentTest.enforce_policy \
+              test/gtest_links/EnergyEfficientAgentTest.split_policy_changed \
+              test/gtest_links/EnergyEfficientAgentTest.split_policy_errors \
+              test/gtest_links/EnergyEfficientAgentTest.split_policy_unchanged \
+              test/gtest_links/EnergyEfficientAgentTest.static_methods \
+              test/gtest_links/EnergyEfficientAgentTest.validate_policy_clamp \
+              test/gtest_links/EnergyEfficientAgentTest.validate_policy_default \
               test/gtest_links/EnergyEfficientRegionTest.freq_starts_at_maximum \
-              test/gtest_links/EnergyEfficientRegionTest.performance_decreases_freq_steps_back_up \
+              test/gtest_links/EnergyEfficientRegionTest.invalid_perf_margin \
               test/gtest_links/EnergyEfficientRegionTest.update_ignores_nan_sample \
-              test/gtest_links/EnvironmentTest.construction0 \
-              test/gtest_links/EnvironmentTest.construction1 \
+              test/gtest_links/EnvironmentTest.internal_defaults \
+              test/gtest_links/EnvironmentTest.user_only \
+              test/gtest_links/EnvironmentTest.user_only_do_profile \
+              test/gtest_links/EnvironmentTest.user_only_do_profile_name \
+              test/gtest_links/EnvironmentTest.default_only \
+              test/gtest_links/EnvironmentTest.override_only \
+              test/gtest_links/EnvironmentTest.default_and_override \
+              test/gtest_links/EnvironmentTest.user_default_and_override \
               test/gtest_links/EnvironmentTest.invalid_ctl \
               test/gtest_links/EpochRuntimeRegulatorTest.all_ranks_enter_exit \
               test/gtest_links/EpochRuntimeRegulatorTest.epoch_runtime \
@@ -95,6 +132,9 @@ GTEST_TESTS = test/gtest_links/AgentFactoryTest.static_info_monitor \
               test/gtest_links/EpochRuntimeRegulatorTest.rank_enter_exit_trace \
               test/gtest_links/EpochRuntimeRegulatorTest.unknown_region \
               test/gtest_links/ExceptionTest.hello \
+              test/gtest_links/FilePolicyTest.parse_json_file \
+              test/gtest_links/FilePolicyTest.negative_bad_files \
+              test/gtest_links/FilePolicyTest.negative_parse_json_file \
               test/gtest_links/FrequencyGovernorTest.frequency_control_domain_default \
               test/gtest_links/FrequencyGovernorTest.adjust_platform \
               test/gtest_links/FrequencyGovernorTest.adjust_platform_clamping \
@@ -105,6 +145,7 @@ GTEST_TESTS = test/gtest_links/AgentFactoryTest.static_info_monitor \
               test/gtest_links/FrequencyMapAgentTest.hint \
               test/gtest_links/FrequencyMapAgentTest.map \
               test/gtest_links/FrequencyMapAgentTest.name \
+              test/gtest_links/FrequencyMapAgentTest.enforce_policy \
               test/gtest_links/HelperTest.string_begins_with \
               test/gtest_links/HelperTest.string_ends_with \
               test/gtest_links/HelperTest.string_split \
@@ -113,10 +154,12 @@ GTEST_TESTS = test/gtest_links/AgentFactoryTest.static_info_monitor \
               test/gtest_links/IOGroupTest.signal_names_are_valid \
               test/gtest_links/IOGroupTest.signals_have_agg_functions \
               test/gtest_links/IOGroupTest.signals_have_descriptions \
+              test/gtest_links/IOGroupTest.signals_have_format_functions \
               test/gtest_links/MSRIOGroupTest.adjust \
               test/gtest_links/MSRIOGroupTest.control_alias \
               test/gtest_links/MSRIOGroupTest.control_error \
               test/gtest_links/MSRIOGroupTest.cpuid \
+              test/gtest_links/MSRIOGroupTest.format_function \
               test/gtest_links/MSRIOGroupTest.parse_json_msrs \
               test/gtest_links/MSRIOGroupTest.parse_json_msrs_error_fields \
               test/gtest_links/MSRIOGroupTest.parse_json_msrs_error_msrs \
@@ -144,17 +187,9 @@ GTEST_TESTS = test/gtest_links/AgentFactoryTest.static_info_monitor \
               test/gtest_links/MSRTest.msr_signal \
               test/gtest_links/MSRTest.string_to_function \
               test/gtest_links/MSRTest.string_to_units \
-              test/gtest_links/ManagerIOSamplerTest.negative_bad_files \
-              test/gtest_links/ManagerIOSamplerTest.negative_parse_json_file \
-              test/gtest_links/ManagerIOSamplerTest.negative_parse_shm \
-              test/gtest_links/ManagerIOSamplerTest.negative_shm_setup_mutex \
-              test/gtest_links/ManagerIOSamplerTest.parse_json_file \
-              test/gtest_links/ManagerIOSamplerTest.parse_shm \
-              test/gtest_links/ManagerIOSamplerTestIntegration.parse_shm \
-              test/gtest_links/ManagerIOTest.negative_write_json_file \
-              test/gtest_links/ManagerIOTest.write_json_file \
-              test/gtest_links/ManagerIOTest.write_shm \
-              test/gtest_links/ManagerIOTestIntegration.write_shm \
+              test/gtest_links/PolicyStoreImpTest.self_consistent \
+              test/gtest_links/PolicyStoreImpTest.update_policy \
+              test/gtest_links/PolicyStoreImpTest.table_precedence \
               test/gtest_links/ModelApplicationTest.parse_config_errors \
               test/gtest_links/MonitorAgentTest.policy_names \
               test/gtest_links/MonitorAgentTest.sample_names \
@@ -194,13 +229,16 @@ GTEST_TESTS = test/gtest_links/AgentFactoryTest.static_info_monitor \
               test/gtest_links/PowerBalancerAgentTest.power_balancer_agent \
               test/gtest_links/PowerBalancerAgentTest.tree_agent \
               test/gtest_links/PowerBalancerAgentTest.tree_root_agent \
+              test/gtest_links/PowerBalancerAgentTest.enforce_policy \
               test/gtest_links/PowerBalancerTest.balance \
               test/gtest_links/PowerBalancerTest.is_runtime_stable \
               test/gtest_links/PowerBalancerTest.power_cap \
               test/gtest_links/PowerGovernorAgentTest.adjust_platform \
               test/gtest_links/PowerGovernorAgentTest.aggregate_sample \
+              test/gtest_links/PowerGovernorAgentTest.enforce_policy \
               test/gtest_links/PowerGovernorAgentTest.split_policy \
               test/gtest_links/PowerGovernorAgentTest.sample_platform \
+              test/gtest_links/PowerGovernorAgentTest.trace \
               test/gtest_links/PowerGovernorAgentTest.wait \
               test/gtest_links/PowerGovernorTest.govern \
               test/gtest_links/PowerGovernorTest.govern_max \
@@ -216,15 +254,19 @@ GTEST_TESTS = test/gtest_links/AgentFactoryTest.static_info_monitor \
               test/gtest_links/ProfileTest.shutdown \
               test/gtest_links/ProfileTest.tprof_table \
               test/gtest_links/ProfileTestIntegration.config \
+              test/gtest_links/ProfileTestIntegration.cpu_set_size \
               test/gtest_links/ProfileTestIntegration.misconfig_affinity \
               test/gtest_links/ProfileTestIntegration.misconfig_ctl_shmem \
               test/gtest_links/ProfileTestIntegration.misconfig_table_shmem \
               test/gtest_links/ProfileTestIntegration.misconfig_tprof_shmem \
+              test/gtest_links/ProfileTracerTest.construct_update_destruct \
+              test/gtest_links/ProfileTracerTest.format \
               test/gtest_links/RegionAggregatorTest.epoch_total \
               test/gtest_links/RegionAggregatorTest.sample_total \
               test/gtest_links/ReporterTest.generate \
               test/gtest_links/RuntimeRegulatorTest.all_in_and_out \
               test/gtest_links/RuntimeRegulatorTest.all_reenter \
+              test/gtest_links/RuntimeRegulatorTest.check_start_count \
               test/gtest_links/RuntimeRegulatorTest.config_rank_then_workers \
               test/gtest_links/RuntimeRegulatorTest.exceptions \
               test/gtest_links/RuntimeRegulatorTest.one_rank_reenter_and_exit \
@@ -242,6 +284,8 @@ GTEST_TESTS = test/gtest_links/AgentFactoryTest.static_info_monitor \
               test/gtest_links/SchedTest.test_proc_cpuset_8 \
               test/gtest_links/SharedMemoryTest.fd_check \
               test/gtest_links/SharedMemoryTest.invalid_construction \
+              test/gtest_links/SharedMemoryTest.lock_shmem \
+              test/gtest_links/SharedMemoryTest.lock_shmem_u \
               test/gtest_links/SharedMemoryTest.share_data \
               test/gtest_links/SharedMemoryTest.share_data_ipc \
               test/gtest_links/TimeIOGroupTest.adjust \
@@ -286,26 +330,27 @@ EXTRA_DIST += test/InternalProfile.cpp \
               test/pmpi_mock.c \
               # end
 
-test_geopm_test_SOURCES = src/EnergyEfficientAgent.cpp \
-                          src/EnergyEfficientAgent.hpp \
-                          src/EnergyEfficientRegion.cpp \
-                          src/EnergyEfficientRegion.hpp \
-                          src/ModelParse.cpp \
-                          src/ModelParse.hpp \
-                          test/AgentFactoryTest.cpp \
+test_geopm_test_SOURCES = test/AgentFactoryTest.cpp \
                           test/AggTest.cpp \
                           test/ApplicationIOTest.cpp \
                           test/CircularBufferTest.cpp \
+                          test/CNLIOGroupTest.cpp \
                           test/CombinedSignalTest.cpp \
                           test/CommMPIImpTest.cpp \
                           test/ControlMessageTest.cpp \
                           test/ControllerTest.cpp \
                           test/CpuinfoIOGroupTest.cpp \
+                          test/CSVTest.cpp \
+                          test/DebugIOGroupTest.cpp \
+                          test/ELFTest.cpp \
+                          test/EndpointTest.cpp \
+                          test/EndpointUserTest.cpp \
                           test/EnergyEfficientAgentTest.cpp \
                           test/EnergyEfficientRegionTest.cpp \
                           test/EnvironmentTest.cpp \
                           test/EpochRuntimeRegulatorTest.cpp \
                           test/ExceptionTest.cpp \
+                          test/FilePolicyTest.cpp \
                           test/FrequencyGovernorTest.cpp \
                           test/FrequencyMapAgentTest.cpp \
                           test/HelperTest.cpp \
@@ -313,15 +358,16 @@ test_geopm_test_SOURCES = src/EnergyEfficientAgent.cpp \
                           test/MSRIOGroupTest.cpp \
                           test/MSRIOTest.cpp \
                           test/MSRTest.cpp \
-                          test/ManagerIOTest.cpp \
+                          test/PolicyStoreImpTest.cpp \
                           test/MockAgent.hpp \
                           test/MockApplicationIO.hpp \
                           test/MockComm.hpp \
                           test/MockControlMessage.hpp \
+                          test/MockEndpointUser.hpp \
+                          test/MockEnergyEfficientRegion.hpp \
                           test/MockEpochRuntimeRegulator.hpp \
                           test/MockFrequencyGovernor.hpp \
                           test/MockIOGroup.hpp \
-                          test/MockManagerIOSampler.hpp \
                           test/MockPlatformIO.hpp \
                           test/MockPlatformTopo.hpp \
                           test/MockPowerBalancer.hpp \
@@ -349,6 +395,7 @@ test_geopm_test_SOURCES = src/EnergyEfficientAgent.cpp \
                           test/PowerGovernorTest.cpp \
                           test/ProfileTableTest.cpp \
                           test/ProfileTest.cpp \
+                          test/ProfileTracerTest.cpp \
                           test/RegionAggregatorTest.cpp \
                           test/ReporterTest.cpp \
                           test/RuntimeRegulatorTest.cpp \

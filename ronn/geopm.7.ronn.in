@@ -137,9 +137,10 @@ compatible with the LLVM OpenMP ABI for extending it in this way.
 ## LAUNCHING THE RUNTIME
 The recommended method for launching the GEOPM runtime is the job
 launch wrapper script **geopmlaunch(1)**.  See this man page for
-details about the command line interface.  If your system does not support
-`aprun` or `srun` for job launch, please make a change request for support
-of the job launch method used on your system at the github issues page:
+details about the command line interface.  If **geopmlaunch(1)** does
+not provide an application launcher supported by your system, please
+make a change request for support of the job launch method used on
+your system at the github issues page:
 
 https://github.com/geopm/geopm/issues
 
@@ -204,27 +205,32 @@ will print a subset of the fields in the trace file called
 
 ## ENVIRONMENT
 When using the launcher wrapper script **geopmlaunch(1)**, the
-interface to the GEOPM runtime is controlled exclusively by the
-launcher command line options.  The launcher script sets the
-environment variables described in this section according to the
-options specified on the command line.  Direct use of these
-environment variables is only recommended when launching the GEOPM
-runtime _without_ **geopmlaunch(1)**.  If launching the GEOPM
-controller in application mode without **geopmlaunch(1)**, the
-environment variables documented below must be set to the same values
-in the contexts where **geopmctl(1)** and the compute application are
-executed.
+interface to the GEOPM runtime is controlled by the launcher command
+line options.  The launcher script sets the environment variables
+described in this section according to the options specified on the
+command line.  Direct use of these environment variables is only
+recommended when launching the GEOPM runtime _without_
+**geopmlaunch(1)**.  If launching the GEOPM controller in application
+mode without **geopmlaunch(1)**, the environment variables documented
+below must be set to the same values in the contexts where
+**geopmctl(1)** and the compute application are executed.
 
-  * `LD_DYNAMIC_WEAK`:
-    When dynamically linking an application to libgeopm for any
-    features supported by the PMPI profiling of the MPI runtime it may
-    be required that the LD_DYNAMIC_WEAK environment variable be set
-    at runtime as is documented in the **ld.so(8)** man page.  When
-    dynamically linking an application, if care is taken to link the
-    libgeopm library before linking the library providing the weak MPI
-    symbols, e.g. "-lgeopm -lmpi", linking order precedence will
-    enforce the required override of the MPI interface symbols and the
-    LD_DYNAMIC_WEAK environment variable is not required at runtime.
+In addition to the environment, there are two node-local configuration
+files that will impact the way the GEOPM behaves.  These are located
+in the following paths:
+
+    /etc/geopm/environment-default.json
+    /etc/geopm/environment-override.json
+
+These files contain JSON objects that map GEOPM environment variables
+to default or override values.  The `environment-default.json` file
+will determine default values for the GEOPM runtime in the case where
+the values are not set in the calling environment.  The
+`environment-override.json` file will enforce that any GEOPM process
+running on the compute node will use the values specified regardless
+of the values set in the calling environment.
+
+`GEOPM ENVIRONMENT VARIABLES`
 
   * `GEOPM_REPORT`:
     See documentation for equivalent command line option to
@@ -286,6 +292,19 @@ executed.
     See documentation for equivalent command line option to
     **geopmlaunch(1)** called `--geopm-hyperthreads-disable`.
 
+`OTHER ENVIRONMENT VARIABLES`
+
+  * `LD_DYNAMIC_WEAK`:
+    When dynamically linking an application to libgeopm for any
+    features supported by the PMPI profiling of the MPI runtime it may
+    be required that the LD_DYNAMIC_WEAK environment variable be set
+    at runtime as is documented in the **ld.so(8)** man page.  When
+    dynamically linking an application, if care is taken to link the
+    libgeopm library before linking the library providing the weak MPI
+    symbols, e.g. "-lgeopm -lmpi", linking order precedence will
+    enforce the required override of the MPI interface symbols and the
+    LD_DYNAMIC_WEAK environment variable is not required at runtime.
+
 ## COPYRIGHT
 Copyright (c) 2015, 2016, 2017, 2018, 2019, Intel Corporation. All rights reserved.
 
@@ -301,6 +320,8 @@ Copyright (c) 2015, 2016, 2017, 2018, 2019, Intel Corporation. All rights reserv
 **geopm_error(3)**,
 **geopm_fortran(3)**,
 **geopm_hash(3)**,
+**geopm_policystore_c(3)**,
+**geopm_pio_c(3)**,
 **geopm_prof_c(3)**,
 **geopm_sched(3)**,
 **geopm_time(3)**,
@@ -309,7 +330,6 @@ Copyright (c) 2015, 2016, 2017, 2018, 2019, Intel Corporation. All rights reserv
 **geopm::Agg(3)**,
 **geopm::CircularBuffer(3)**,
 **geopm::CpuinfoIOGroup(3)**,
-**geopm::EnergyEfficientAgent(3)**,
 **geopm::EnergyEfficientRegion(3)**,
 **geopm::Exception(3)**,
 **geopm::Helper(3)**,
@@ -317,14 +337,11 @@ Copyright (c) 2015, 2016, 2017, 2018, 2019, Intel Corporation. All rights reserv
 **geopm::MSR(3)**,
 **geopm::MSRIO(3)**,
 **geopm::MSRIOGroup(3)**,
-**geopm::MonitorAgent(3)**,
 **geopm::PlatformIO(3)**,
 **geopm::PlatformTopo(3)**,
 **geopm::PluginFactory(3)**,
 **geopm::PowerBalancer(3)**,
-**geopm::PowerBalancerAgent(3)**,
 **geopm::PowerGovernor(3)**,
-**geopm::PowerGovernorAgent(3)**,
 **geopm::ProfileIOGroup(3)**,
 **geopm::ProfileIOSample(3)**,
 **geopm::RegionAggregator(3)**,

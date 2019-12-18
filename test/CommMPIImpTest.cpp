@@ -392,6 +392,16 @@ extern "C"
 
 #define MPI_Bcast(p0, p1, p2, p3, p4) mock_bcast(p0, p1, p2, p3, p4)
 #define PMPI_Bcast(p0, p1, p2, p3, p4) mock_bcast(p0, p1, p2, p3, p4)
+
+    static int mock_finalized(int *param0)
+    {
+        *param0 = 0;
+        return 0;
+    }
+
+#define MPI_Finalized(p0) mock_finalized(p0)
+#define PMPI_Finalized(p0) mock_finalized(p0)
+
 }
 
 #include "gtest/gtest.h"
@@ -635,11 +645,11 @@ TEST_F(CommMPIImpTest, mpi_gatherv)
 
     g_sizes.push_back(sizeof(size_t));
     g_params.push_back(malloc(g_sizes[0]));
-    g_sizes.push_back(sizeof(size_t));
+    g_sizes.push_back(sizeof(int));
     g_params.push_back(malloc(g_sizes[1]));
     g_sizes.push_back(sizeof(MPI_Datatype));
     g_params.push_back(malloc(g_sizes[2]));
-    g_sizes.push_back(sizeof(size_t));
+    g_sizes.push_back(sizeof(void *));
     g_params.push_back(malloc(g_sizes[3]));
     g_sizes.push_back(sizeof(int));
     g_params.push_back(malloc(g_sizes[4]));

@@ -20,6 +20,26 @@ The build scripts use the GEOPM install location defined in
 environment variable "MPICC" must be set to the path of the user's MPI
 C compiler wrapper.
 
+Running the tutorials with Intel(R) MPI Library
+-----------------------------------------------
+When launching the tutorials with Intel(R) MPI Library but without SLURM, the
+desired hosts must be specified in the ./tutorial_hosts file.  This will be
+used with the '-f <hosts_file>' option to mpiexec.hydra.
+
+For certain configurations of SLURM, it may be necessary to populate the
+tutorial_hosts file and and use it with your "geopmlaunch impi ..." call.
+This can be accomplished by issuing:
+    scontrol show hostnames > tutorial_hosts
+Then add "-f tutorial_hosts" to your geopmlaunch call.
+
+To determine if tutorial_hosts is necessary, try the following:
+  1. Allocate 2 nodes:  salloc -N2
+  2. Issue the following: mpiexec.hydra -n 10 -ppn 10 hostname
+    a. You should observe the same hostname is printed 10 times.
+  3. Next issue: mpiexec.hydra -n 10 -ppn 5 hostname
+    a. You should observe 5 occurances of hostname A and 5 of B.
+If either 2.a or 3.a is not observed properly, you'll need to utilize
+the tutorial_hosts file.
 
 0. Profiling and Tracing an Unmodified Application
 --------------------------------------------------
@@ -50,7 +70,7 @@ aprun job launcher:
 If your system does not support srun or aprun launch, the third option
 is to set a few environment variables for GEOPM as follows:
 
-    LD_PRELOAD=$GEOPM_LIBDIR/libgeopm.so
+    LD_PRELOAD=$GEOPM_LIB/libgeopm.so
     LD_DYNAMIC_WEAK=true
     GEOPM_PMPI_CTL=process
     GEOPM_REPORT=tutorial_0_report
@@ -170,7 +190,7 @@ progress values recorded can be seen in the trace output.
 
 6. The model application
 ------------------------
-Tutoral 6 uses the geopmbench tool and configures it with the json
+Tutorial 6 uses the geopmbench tool and configures it with the json
 input file.  The geopmbench application is documented in the
 geopmbench(1) man page and can be use to to a wide range of
 experiments with GEOPM.  Note that geopmbench is used in most

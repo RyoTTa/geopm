@@ -32,12 +32,14 @@
 
 #include "Controller.hpp"
 
-#include <algorithm>
 #include <cmath>
+#include <climits>
 
-#include "geopm_env.h"
+#include <algorithm>
+
 #include "geopm_signal_handler.h"
 #include "ApplicationIO.hpp"
+#include "Environment.hpp"
 #include "Reporter.hpp"
 #include "Tracer.hpp"
 #include "Exception.hpp"
@@ -46,9 +48,18 @@
 #include "PlatformIO.hpp"
 #include "Agent.hpp"
 #include "TreeComm.hpp"
-#include "ManagerIO.hpp"
+#include "EndpointUser.hpp"
+#include "FilePolicy.hpp"
 #include "Helper.hpp"
 #include "config.h"
+
+namespace geopm
+{
+    static bool is_shmem_policy_path(const std::string &policy_path)
+    {
+        return policy_path[0] == '/' && policy_path.find_last_of('/') == 0;
+    }
+}
 
 extern "C"
 {
@@ -81,8 +92,7 @@ extern "C"
     {
         int err = 0;
         try {
-            auto tmp_comm = geopm::comm_factory().make_plugin(geopm_env_comm());
-            geopm::Controller ctl(std::move(tmp_comm));
+            geopm::Controller ctl;
             err = geopm_ctl_run((struct geopm_ctl_c *)&ctl);
         }
         catch (...) {
@@ -121,6 +131,31 @@ extern "C"
     {
         return geopm_run_imp(ctl);
     }
+
+    int geopm_agent_enforce_policy(void)
+    {
+        int err = 0;
+        try {
+            std::string agent_name = geopm::environment().agent();
+            std::shared_ptr<geopm::Agent> agent(geopm::agent_factory().make_plugin(agent_name));
+            std::vector<double> policy(geopm::Agent::num_policy(geopm::agent_factory().dictionary(agent_name)));
+            std::string policy_path = geopm::environment().policy();
+            if (geopm::is_shmem_policy_path(policy_path)) {
+                geopm::EndpointUser::make_unique(policy_path, {})->read_policy(policy);
+            }
+            else {
+                geopm::FilePolicy file_policy(policy_path,
+                                              geopm::Agent::policy_names(geopm::agent_factory().dictionary(agent_name)));
+                policy = file_policy.get_policy();
+            }
+            agent->validate_policy(policy);
+            agent->enforce_policy(policy);
+        }
+        catch (...) {
+            err = geopm::exception_handler(std::current_exception(), false);
+        }
+        return err;
+    }
 }
 
 namespace geopm
@@ -142,24 +177,32 @@ namespace geopm
         return ret;
     }
 
+    Controller::Controller()
+        : Controller(comm_factory().make_plugin(environment().comm()))
+    {
+
+    }
+
     Controller::Controller(std::shared_ptr<Comm> ppn1_comm)
         : Controller(ppn1_comm,
                      platform_io(),
-                     geopm_env_agent(),
-                     Agent::num_policy(agent_factory().dictionary(geopm_env_agent())),
-                     Agent::num_sample(agent_factory().dictionary(geopm_env_agent())),
+                     environment().agent(),
+                     Agent::num_policy(agent_factory().dictionary(environment().agent())),
+                     Agent::num_sample(agent_factory().dictionary(environment().agent())),
                      std::unique_ptr<TreeComm>(new TreeCommImp(ppn1_comm,
-                         Agent::num_policy(agent_factory().dictionary(geopm_env_agent())),
-                         Agent::num_sample(agent_factory().dictionary(geopm_env_agent())))),
-                     std::shared_ptr<ApplicationIO>(new ApplicationIOImp(geopm_env_shmkey())),
+                         Agent::num_policy(agent_factory().dictionary(environment().agent())),
+                         Agent::num_sample(agent_factory().dictionary(environment().agent())))),
+                     std::shared_ptr<ApplicationIO>(new ApplicationIOImp(environment().shmkey())),
                      std::unique_ptr<Reporter>(new ReporterImp(get_start_time(),
-                                                                geopm_env_report(),
-                                                                platform_io(),
-                                                                platform_topo(),
-                                                                ppn1_comm->rank())),
+                                                               environment().report(),
+                                                               platform_io(),
+                                                               platform_topo(),
+                                                               ppn1_comm->rank())),
                      nullptr,
                      std::vector<std::unique_ptr<Agent> >{},
-                     std::unique_ptr<ManagerIOSampler>(new ManagerIOSamplerImp(geopm_env_policy(), true)))
+                     Agent::policy_names(agent_factory().dictionary(environment().agent())),
+                     nullptr,
+                     environment().policy())
     {
 
     }
@@ -174,7 +217,9 @@ namespace geopm
                            std::unique_ptr<Reporter> reporter,
                            std::unique_ptr<Tracer> tracer,
                            std::vector<std::unique_ptr<Agent> > level_agent,
-                           std::unique_ptr<ManagerIOSampler> manager_io_sampler)
+                           std::vector<std::string> policy_names,
+                           std::unique_ptr<EndpointUser> endpoint,
+                           const std::string &policy_path)
         : m_comm(comm)
         , m_platform_io(plat_io)
         , m_agent_name(agent_name)
@@ -193,7 +238,9 @@ namespace geopm
         , m_out_policy(m_num_level_ctl)
         , m_in_sample(m_num_level_ctl)
         , m_out_sample(m_num_send_up, NAN)
-        , m_manager_io_sampler(std::move(manager_io_sampler))
+        , m_endpoint(std::move(endpoint))
+        , m_policy_path(policy_path)
+        , m_is_dynamic_policy(is_shmem_policy_path(policy_path))
     {
         // Three dimensional vector over levels, children, and message
         // index.  These are used as temporary storage when passing
@@ -205,6 +252,13 @@ namespace geopm
             m_in_sample[level] = std::vector<std::vector<double> >(num_children,
                                                                    std::vector<double>(m_num_send_up, NAN));
         }
+        if (m_is_dynamic_policy && m_endpoint == nullptr) {
+            m_endpoint = EndpointUser::make_unique(m_policy_path, get_hostnames(hostname()));
+        }
+        else if (!m_is_dynamic_policy) {
+            m_file_policy = geopm::make_unique<FilePolicy>(m_policy_path, policy_names);
+            m_in_policy = m_file_policy->get_policy();
+        }
     }
 
     Controller::~Controller()
@@ -214,36 +268,72 @@ namespace geopm
         m_platform_io.restore_control();
     }
 
+    void Controller::create_agents(void)
+    {
+        if (m_agent.size() == 0) {
+            for (int level = 0; level < m_max_level; ++level) {
+                m_agent.push_back(agent_factory().make_plugin(m_agent_name));
+            }
+        }
+#ifdef GEOPM_DEBUG
+        if (m_agent.size() == 0) {
+            throw Exception("Controller requires at least one Agent",
+                            GEOPM_ERROR_LOGIC, __FILE__, __LINE__);
+        }
+        if (m_max_level != (int)m_agent.size()) {
+            throw Exception("Controller number of agents is incorrect",
+                            GEOPM_ERROR_LOGIC, __FILE__, __LINE__);
+        }
+#endif
+    }
+
     void Controller::init_agents(void)
     {
+#ifdef GEOPM_DEBUG
+        if (m_agent.size() != (size_t)m_max_level) {
+            throw Exception("Controller must call create_agents() before init_agents().",
+                            GEOPM_ERROR_LOGIC, __FILE__, __LINE__);
+        }
+#endif
         std::vector<int> fan_in(m_tree_comm->root_level());
         int level = 0;
         for (auto &it : fan_in) {
             it = m_tree_comm->level_size(level);
             ++level;
         }
-        if (m_agent.size() == 0) {
-            for (level = 0; level < m_max_level; ++level) {
-                m_agent.push_back(agent_factory().make_plugin(m_agent_name));
-                m_agent.back()->init(level, fan_in, (level < m_tree_comm->num_level_controlled()));
+        for (level = 0; level < m_max_level; ++level) {
+            m_agent[level]->init(level, fan_in, (level < m_tree_comm->num_level_controlled()));
+        }
+    }
+
+    std::set<std::string> Controller::get_hostnames(const std::string &hostname)
+    {
+        std::set<std::string> hostnames;
+        int num_rank = m_comm->num_rank();
+        int rank = m_comm->rank();
+        // resize hostname string to fixed size buffer
+        std::string temp = hostname;
+        temp.resize(NAME_MAX, 0);
+        std::vector<char> name_buffer(num_rank * NAME_MAX, 0);
+        m_comm->gather((void*)temp.c_str(), NAME_MAX,
+                     (void*)name_buffer.data(), NAME_MAX, 0);
+        if (rank == 0) {
+            auto ind = name_buffer.begin();
+            for (int rr = 0; rr < num_rank; ++rr) {
+                auto term = std::find(ind, ind + NAME_MAX, '\0');
+                std::string host(ind, term);
+                hostnames.insert(host);
+                ind += NAME_MAX;
             }
         }
-
-        /// @todo move somewhere else: need to happen after Agents are constructed
-        // sanity checks
-        if (m_agent.size() == 0) {
-            throw Exception("Controller requires at least one Agent",
-                            GEOPM_ERROR_INVALID, __FILE__, __LINE__);
-        }
-        if (m_max_level != (int)m_agent.size()) {
-            throw Exception("Controller number of agents is incorrect",
-                            GEOPM_ERROR_INVALID, __FILE__, __LINE__);
-        }
+        return hostnames;
     }
 
     void Controller::run(void)
     {
         m_application_io->connect();
+        geopm_signal_handler_check();
+        create_agents();
         geopm_signal_handler_check();
         m_platform_io.save_control();
         geopm_signal_handler_check();
@@ -312,9 +402,15 @@ namespace geopm
     {
         bool do_send = false;
         if (m_is_root) {
-            /// @todo Pass m_in_policy by reference into the sampler, and return an is_updated bool.
-            m_in_policy = m_manager_io_sampler->sample();
-            do_send = true;
+            /// @todo Return an is_updated bool.
+            if (m_is_dynamic_policy) {
+                m_endpoint->read_policy(m_in_policy);
+                do_send = true;
+            }
+            else {
+                m_in_policy = m_file_policy->get_policy();
+                do_send = true;
+            }
         }
         else {
             do_send = m_tree_comm->receive_down(m_num_level_ctl, m_in_policy);
@@ -363,8 +459,9 @@ namespace geopm
                 m_tree_comm->send_up(m_num_level_ctl, m_out_sample);
             }
             else {
-                /// @todo At the root of the tree, send signals up to the
-                /// resource manager.
+                if (m_is_dynamic_policy) {
+                    m_endpoint->write_sample(m_out_sample);
+                }
             }
         }
     }
@@ -383,8 +480,9 @@ namespace geopm
         if (m_tracer == nullptr) {
             m_tracer = geopm::make_unique<TracerImp>(get_start_time());
         }
-        auto agent_cols = m_agent[0]->trace_names();
-        m_tracer->columns(agent_cols);
+        std::vector<std::string> agent_cols = m_agent[0]->trace_names();
+        std::vector<std::function<std::string(double)> > agent_formats = m_agent[0]->trace_formats();
+        m_tracer->columns(agent_cols, agent_formats);
         m_trace_sample.resize(agent_cols.size());
     }
 

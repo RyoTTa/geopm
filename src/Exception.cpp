@@ -42,7 +42,7 @@
 #include <signal.h>
 #include <limits.h>
 
-#include "geopm_env.h"
+#include "Environment.hpp"
 #include "geopm_signal_handler.h"
 #include "config.h"
 
@@ -90,6 +90,9 @@ extern "C"
             case GEOPM_ERROR_NO_AGENT:
                 strncpy(msg, "<geopm> Requested agent is unavailable or invalid", size);
                 break;
+            case GEOPM_ERROR_DATA_STORE:
+                strncpy(msg, "<geopm> Encountered a data store error", size);
+                break;
             default:
 #ifndef _GNU_SOURCE
                 int undef = strerror_r(err, msg, size);
@@ -106,23 +109,38 @@ extern "C"
         }
     }
 
+    static int geopm_env_shmkey(std::string &shmkey)
+    {
+        int err = 0;
+        try {
+            shmkey = geopm::environment().shmkey();
+        }
+        catch (...) {
+            err = GEOPM_ERROR_RUNTIME;
+        }
+        return err;
+    }
+
     void geopm_error_destroy_shmem(void)
     {
         int err = 0;
         char err_msg[2 * NAME_MAX];
         DIR *did = opendir("/dev/shm");
-        if (did &&
-            strlen(geopm_env_shmkey()) &&
-            *(geopm_env_shmkey()) == '/' &&
-            strchr(geopm_env_shmkey(), ' ') == NULL &&
-            strchr(geopm_env_shmkey() + 1, '/') == NULL) {
+        std::string key_base;
+        err = geopm_env_shmkey(key_base);
+        if (!err &&
+            did &&
+            strlen(key_base.c_str()) &&
+            *(key_base.c_str()) == '/' &&
+            strchr(key_base.c_str(), ' ') == NULL &&
+            strchr(key_base.c_str() + 1, '/') == NULL) {
 
             struct dirent *entry;
             char shm_key[NAME_MAX];
             shm_key[0] = '/';
             shm_key[NAME_MAX - 1] = '\0';
             while ((entry = readdir(did))) {
-                if (strstr(entry->d_name, geopm_env_shmkey() + 1) == entry->d_name) {
+                if (strstr(entry->d_name, key_base.c_str() + 1) == entry->d_name) {
                     strncpy(shm_key + 1, entry->d_name, NAME_MAX - 2);
                     err = shm_unlink(shm_key);
                     if (err) {

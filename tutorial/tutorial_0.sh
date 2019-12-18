@@ -34,21 +34,37 @@
 set err=0
 . tutorial_env.sh
 
-export PATH=$GEOPM_BINDIR:$PATH
+export PATH=$GEOPM_BIN:$PATH
 export PYTHONPATH=$GEOPMPY_PKGDIR:$PYTHONPATH
-export LD_LIBRARY_PATH=$GEOPM_LIBDIR:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=$GEOPM_LIB:$LD_LIBRARY_PATH
 
-# Run on two nodes
-# with 8 application MPI ranks
+# Run on 2 nodes
+# with 8 total application MPI ranks
 # load geopm runtime with LD_PRELOAD
 # launch geopm controller as an MPI process
 # create a report file
 # create trace files
-if [ "$GEOPM_LAUNCHER" = "srun" ]; then
+
+NUM_NODES=2
+RANKS_PER_NODE=2
+TOTAL_RANKS=$((${RANKS_PER_NODE} * ${NUM_NODES}))
+
+if [ "$MPIEXEC" ]; then
+    # Use MPIEXEC and set GEOPM environment variables to launch the job
+    LD_PRELOAD=$GEOPM_LIB/libgeopm.so \
+    LD_DYNAMIC_WEAK=true \
+    GEOPM_CTL=process \
+    GEOPM_REPORT=tutorial_0_report \
+    GEOPM_TRACE=tutorial_0_trace \
+    $MPIEXEC \
+    ./tutorial_0
+    err=$?
+elif [ "$GEOPM_LAUNCHER" = "srun" ]; then
     # Use GEOPM launcher wrapper script with SLURM's srun
     geopmlaunch srun \
-                -N 2 \
-                -n 8 \
+                -N ${NUM_NODES} \
+                -n ${TOTAL_RANKS} \
+		--mpi=pmix \
                 --geopm-preload \
                 --geopm-ctl=process \
                 --geopm-report=tutorial_0_report \
@@ -58,23 +74,24 @@ if [ "$GEOPM_LAUNCHER" = "srun" ]; then
 elif [ "$GEOPM_LAUNCHER" = "aprun" ]; then
     # Use GEOPM launcher wrapper script with ALPS's aprun
     geopmlaunch aprun \
-                -N 4 \
-                -n 8 \
+                -N ${RANKS_PER_NODE} \
+                -n ${TOTAL_RANKS} \
                 --geopm-preload \
                 --geopm-ctl=process \
                 --geopm-report=tutorial_0_report \
                 --geopm-trace=tutorial_0_trace \
                 -- ./tutorial_0
     err=$?
-elif [ "$MPIEXEC" ]; then
-    # Use MPIEXEC and set GEOPM environment variables to launch the job
-    LD_PRELOAD=$GEOPM_LIBDIR/libgeopm.so \
-    LD_DYNAMIC_WEAK=true \
-    GEOPM_CTL=process \
-    GEOPM_REPORT=tutorial_0_report \
-    GEOPM_TRACE=tutorial_0_trace \
-    $MPIEXEC \
-    ./tutorial_0
+elif [ "$GEOPM_LAUNCHER" = "impi" ]; then
+    # Use GEOPM launcher wrapper script with Intel(R) MPI
+    geopmlaunch impi \
+                -ppn ${RANKS_PER_NODE} \
+                -n ${TOTAL_RANKS} \
+                --geopm-preload \
+                --geopm-ctl=process \
+                --geopm-report=tutorial_0_report \
+                --geopm-trace=tutorial_0_trace \
+                -- ./tutorial_0
     err=$?
 else
     echo "Error: tutorial_0.sh: set GEOPM_LAUNCHER to 'srun' or 'apun'." 2>&1
